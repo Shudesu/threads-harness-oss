@@ -11,7 +11,7 @@ Meta Threads用の管理画面と予約投稿Worker。React / Cloudflare Kumo、
 - APIキー認証、AES-GCMによるトークン保存、一回限りの管理者SSO
 - 旧Python原稿生成器のJSON出力をクラウド下書きへ渡すアダプター
 
-**alpha版です。** 実アカウントによる公開の通し検証は未完了。OAuth、画像投稿、トークン自動更新、成否不明投稿の照合UIは未実装です。APIキーを持つ人はその環境の管理者です。顧客ごとにWorker・D1・秘密鍵を分離してください。Harness Cloudのセルフサービス開通には別途control planeへの組み込みが必要です。
+**alpha版です。** 実アカウントによる公開の通し検証は未完了。OAuth、画像投稿、トークン自動更新、成否不明投稿の照合UIは未実装です。APIキーを持つ人はその環境の管理者です。顧客ごとにWorker・D1・秘密鍵を分離してください。[The Harness Cloud](https://theharness.cloud/) でもアルファ版の環境を開設できます。SNSトークンなしで環境を作れますが、実際の投稿には有効なThreadsアカウントの接続が必要です。
 
 ## 開発・検証
 
