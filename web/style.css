@@ -1,0 +1,6 @@
+@import 'tailwindcss';
+@import '@cloudflare/kumo/styles/tailwind';
+@source '../node_modules/@cloudflare/kumo/dist';
+body { margin: 0; font-family: system-ui, sans-serif; }
+button, input, textarea, select { font: inherit; }
+a { text-underline-offset: 3px; }

@@ -1,0 +1,10 @@
+ALTER TABLE threads_posts ADD COLUMN chain_id TEXT;
+ALTER TABLE threads_posts ADD COLUMN part_index INTEGER;
+ALTER TABLE threads_posts ADD COLUMN parent_id TEXT REFERENCES threads_posts(id);
+ALTER TABLE threads_posts ADD COLUMN views INTEGER;
+ALTER TABLE threads_posts ADD COLUMN likes INTEGER;
+ALTER TABLE threads_posts ADD COLUMN replies INTEGER;
+ALTER TABLE threads_posts ADD COLUMN reposts INTEGER;
+ALTER TABLE threads_posts ADD COLUMN quotes INTEGER;
+ALTER TABLE threads_posts ADD COLUMN insights_updated_at TEXT;
+CREATE UNIQUE INDEX threads_posts_chain_part ON threads_posts(chain_id, part_index);
