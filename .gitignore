@@ -9,3 +9,8 @@ dist-worker/
 node_modules
 __pycache__/
 *.pyc
+
+.dev.vars.*
+!.dev.vars.example
+.env.*
+!.env.example

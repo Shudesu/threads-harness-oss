@@ -14,3 +14,4 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: python3 -m unittest discover -s test -p 'test_*.py'
+      - run: node scripts/release/build-wfp-bundle.mjs

@@ -137,7 +137,7 @@ export async function signAdminSsoToken(
 /**
  * Verify signature + claims. Replay prevention is NOT handled here — the caller
  * must additionally burn `payload.jti` in durable storage (see
- * `consumeAdminSsoJti` in @line-crm/db).
+ * `admin_sso_jti` insert in src/admin-sso.ts).
  */
 export async function verifyAdminSsoToken(
   secret: string,

@@ -2,10 +2,11 @@ import { execFileSync } from 'node:child_process';
 import { cpSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseConfig } from './config.mjs';
 import { hashWorkerAsset, normalizeAssetPath } from './asset-hash.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
-const config = JSON.parse(readFileSync(join(root, 'wrangler.jsonc'), 'utf8'));
+const config = parseConfig(readFileSync(join(root, 'wrangler.jsonc'), 'utf8'));
 const output = join(root, 'dist-worker');
 const bundle = join(output, 'wfp-bundle');
 // Local dry run only. Production commands must use the Cloud account wrapper.
@@ -16,6 +17,7 @@ const modules = readdirSync(join(output, 'worker')).filter(f => f.endsWith('.js'
 if (!modules.includes('index.js')) throw new Error('Worker entry was not built');
 for (const f of modules) cpSync(join(output, 'worker', f), join(bundle, 'worker', f));
 writeFileSync(join(bundle, 'worker-manifest.json'), JSON.stringify({
+  observability: config.observability ?? { enabled: false },
   entry: 'index.js', compatibilityDate: config.compatibility_date,
   compatibilityFlags: config.compatibility_flags ?? [], modules,
   durableObjects: config.durable_objects.bindings, migrations: config.migrations, adminBasePath: '',
