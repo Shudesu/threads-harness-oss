@@ -35,3 +35,7 @@
 452 / 4279019は、長期トークンの再交換やThreads App Secretの取り違えも確認します。投稿内のユニークなリンクが6つ以上なら5つ以下に減らしてください。
 
 トークン単体では、秘密をログに残さないクライアントから `GET https://graph.threads.net/v1.0/me?fields=id,username` に `Authorization: Bearer <Threadsユーザートークン>` を渡して確認できます。これで分かるのはプロフィール取得で、公開・返信・分析の全権限を保証しません。[公式Access Token Debugger](https://developers.facebook.com/tools/debug/accesstoken/)で実期限と権限も確認してください。URLやシェル履歴にトークンを直接書かないでください。
+
+## 素材の処理で停止する場合
+
+公開URLがファイルを返すこと、Metaから認証なしで取得できること、公開時点でも期限内であること、06章の形式・容量・長さを確認します。ダウンロード失敗・動画変換失敗・EXPIRED・状態確認タイムアウトを区別して表示します。URLをログに貼らないでください。`needs_review` の素材は保存済みコンテナを照合してから次の操作を決め、自動再送しません。

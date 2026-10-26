@@ -22,6 +22,7 @@ beforeEach(async () => {
   sqlite.exec(readFileSync(new URL('../migrations/0004_connection_health.sql', import.meta.url), 'utf8'));
   sqlite.exec(readFileSync(new URL('../migrations/0005_account_schedulers.sql', import.meta.url), 'utf8'));
   sqlite.exec(readFileSync(new URL('../migrations/0006_publication_safety.sql', import.meta.url), 'utf8'));
+  sqlite.exec(readFileSync(new URL('../migrations/0007_media.sql', import.meta.url), 'utf8'));
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
     if (String(url).includes('/threads_publishing_limit')) return Response.json({ data: [{ quota_usage: 0, config: { quota_total: 250, quota_duration: 86400 }, reply_quota_usage: 0, reply_config: { quota_total: 1000, quota_duration: 86400 } }] });
     throw new Error('Unexpected external request in test');
@@ -157,7 +158,7 @@ describe('VPS chain workflow', () => {
     await processPost(env, row(ids[0]), () => client as any);
     expect((await request(`/posts/${ids[0]}/cancel`, 'POST', {})).status).toBe(409);
     await processPost(env, row(ids[1]), () => client as any);
-    expect(client.create).toHaveBeenLastCalledWith('123', 'body', 'parent-published');
+    expect(client.create).toHaveBeenLastCalledWith('123', 'body', 'parent-published', undefined);
     client.publish.mockRejectedValueOnce(new Error('timeout'));
     await processPost(env, row(ids[1]), () => client as any);
     const accountState = schedulerState();
@@ -172,7 +173,7 @@ describe('VPS chain workflow', () => {
     const fetcher = vi.fn(async () => Response.json({ data: [{ name: 'likes', values: [{ value: 7 }] }, { name: 'views', values: [{ value: 'unknown' }] }] }));
     const api = new ThreadsApi('token', fetcher as any);
     expect(await api.insights('123')).toEqual({ views: null, likes: 7, replies: null, reposts: null, quotes: null, shares: null });
-    fetcher.mockResolvedValueOnce(Response.json({ id: 'container' }));
+    fetcher.mockResolvedValueOnce(Response.json({ id: '456' }));
     await api.create('123', 'body', 'parent');
     expect(String(fetcher.mock.calls[1][1].body)).toContain('reply_to_id=parent');
   });
@@ -486,4 +487,162 @@ it('stores shares separately, preserves missing metrics as null, and returns the
 it('enforces the shared emoji limit at the draft API boundary', async () => {
   expect((await request('/posts', 'POST', { accountId: '123', text: '😀'.repeat(126) })).status).toBe(400);
   expect((await request('/posts', 'POST', { accountId: '123', text: '😀'.repeat(125) })).status).toBe(201);
+});
+
+describe('media drafts and safe publication', () => {
+  const image = { type: 'IMAGE', url: 'https://cdn.example.com/image.png' };
+  const video = { type: 'VIDEO', url: 'https://cdn.example.com/video.mp4' };
+  const mediaClient = () => ({
+    publishingLimits: vi.fn(async () => ({ posts: { remaining: 250 } })),
+    create: vi.fn(async () => '101'), createMediaChild: vi.fn(async () => '201'),
+    createCarousel: vi.fn(async () => '301'), status: vi.fn(async () => ({ status: 'FINISHED' })),
+    publish: vi.fn(async () => '401'),
+  });
+  const draft = async (media: unknown[], text = '') => {
+    const response = await request('/posts', 'POST', { accountId: '123', text, media });
+    expect(response.status).toBe(201);
+    return (await response.json() as any).data.id;
+  };
+  it('saves blank captions, edits media, preserves it on text-only patch and rejects invalid URLs', async () => {
+    const id = await draft([image]);
+    expect(JSON.parse(row(id).media_json)).toEqual([image]);
+    expect((await request(`/posts/${id}`, 'PATCH', { text: 'caption' })).status).toBe(200);
+    expect(JSON.parse(row(id).media_json)).toEqual([image]);
+    expect((await request(`/posts/${id}`, 'PATCH', { media: [video, image] })).status).toBe(200);
+    expect(JSON.parse(row(id).media_json)).toEqual([video, image]);
+    for (const media of [[{ ...image, url: 'http://localhost/a' }], Array(21).fill(image), [{ type: 'TEXT', url: image.url }]]) {
+      expect((await request('/posts', 'POST', { accountId: '123', media })).status).toBe(400);
+    }
+    expect((await request('/posts', 'POST', { accountId: '123', text: '', media: [] })).status).toBe(400);
+  });
+  it('queues, cancels and archives complete mixed-media chains without contacting publishing endpoints', async () => {
+    const res = await request('/chains', 'POST', { accountId: '123', parts: ['text', { text: '', media: [image, video] }] });
+    expect(res.status).toBe(201);
+    const { ids } = (await res.json() as any).data;
+    expect(row(ids[1]).parent_id).toBe(ids[0]);
+    expect((await request(`/posts/${ids[0]}/queue`, 'POST', { scheduledAt: new Date(Date.now()+3600000).toISOString() })).status).toBe(200);
+    expect((await request(`/posts/${ids[1]}`, 'PATCH', { media: [video] })).status).toBe(409);
+    expect((await request(`/posts/${ids[0]}/cancel`, 'POST', {})).status).toBe(200);
+    expect(row(ids[1]).status).toBe('draft');
+    expect((await request(`/posts/${ids[0]}/archive`, 'POST', {})).status).toBe(200);
+    expect(row(ids[1]).status).toBe('archived');
+  });
+  it.each([image, video])('publishes one $type only after readiness and keeps optional caption', async media => {
+    const id = await draft([media]);
+    sqlite.prepare("UPDATE threads_posts SET status='queued' WHERE id=?").run(id);
+    const client = mediaClient();
+    await processPost(env, row(id), () => client as any);
+    expect(client.create).toHaveBeenCalledWith('123', '', undefined, media);
+    expect(client.publish).not.toHaveBeenCalled();
+    expect(row(id).container_id).toBe('101');
+    client.status.mockResolvedValueOnce({ status: 'IN_PROGRESS' });
+    await processPost(env, row(id), () => client as any);
+    expect(row(id).status).toBe('processing');
+    expect(client.publish).not.toHaveBeenCalled();
+    await processPost(env, row(id), () => client as any);
+    expect(row(id).published_id).toBe('401');
+    expect(client.create).toHaveBeenCalledTimes(1);
+    expect(client.publish).toHaveBeenCalledTimes(1); expect(client.publish).toHaveBeenCalledWith('123', '101');
+  });
+  it('builds all 20 mixed children in bounded batches, preserving order across ticks before one parent publish', async () => {
+    const media = Array.from({length:20},(_,i)=>i%2?video:image);
+    const id = await draft(media, 'album');
+    sqlite.prepare("UPDATE threads_posts SET status='queued' WHERE id=?").run(id);
+    const client = mediaClient(); let created = 0;
+    client.createMediaChild.mockImplementation(async () => String(200 + ++created));
+    for (let tick=0;tick<30 && row(id).status!=='published';tick++) {
+      const before = client.createMediaChild.mock.calls.length;
+      await processPost(env, row(id), () => client as any);
+      expect(client.createMediaChild.mock.calls.length-before).toBeLessThanOrEqual(3);
+    }
+    expect(client.createMediaChild).toHaveBeenCalledTimes(20);
+    expect(client.createCarousel).toHaveBeenCalledTimes(1); expect(client.createCarousel).toHaveBeenCalledWith('123','album',Array.from({length:20},(_,i)=>String(201+i)),undefined);
+    expect(client.publish).toHaveBeenCalledTimes(1); expect(client.publish).toHaveBeenCalledWith('123','301');
+    expect(row(id).status).toBe('published');
+  });
+  it('waits for a video child without recreating children or creating the parent early', async () => {
+    const id = await draft([image,video]); const client=mediaClient();
+    client.createMediaChild.mockResolvedValueOnce('201').mockResolvedValueOnce('202');
+    sqlite.prepare("UPDATE threads_posts SET status='queued' WHERE id=?").run(id);
+    await processPost(env,row(id),()=>client as any);
+    client.status.mockResolvedValueOnce({status:'FINISHED'}).mockResolvedValueOnce({status:'IN_PROGRESS'});
+    await processPost(env,row(id),()=>client as any);
+    expect(client.createCarousel).not.toHaveBeenCalled();
+    expect(JSON.parse(row(id).media_children_json)[0].ready).toBe(true);
+    await processPost(env,row(id),()=>client as any);
+    expect(client.createMediaChild).toHaveBeenCalledTimes(2);
+    expect(client.createCarousel).toHaveBeenCalledTimes(1);
+    expect(client.publish).not.toHaveBeenCalled();
+    await processPost(env,row(id),()=>client as any);
+    expect(row(id).status).toBe('published');
+  });
+  it('quarantines an uncertain child create and preserves confirmed earlier IDs', async () => {
+    const id=await draft([image,video]); const client=mediaClient();
+    client.createMediaChild.mockResolvedValueOnce('201').mockRejectedValueOnce(new Error('network uncertainty'));
+    sqlite.prepare("UPDATE threads_posts SET status='queued' WHERE id=?").run(id);
+    await processPost(env,row(id),()=>client as any);
+    expect(row(id).status).toBe('needs_review');
+    expect(JSON.parse(row(id).media_children_json).map((c:any)=>c.id)).toEqual(['201']);
+    await processPost(env,row(id),()=>client as any);
+    expect(client.createMediaChild).toHaveBeenCalledTimes(2);
+    expect(client.publish).not.toHaveBeenCalled();
+  });
+  it.each(['ERROR','EXPIRED'])('does not publish an album containing a %s child', async status => {
+    const id=await draft([image,video]); const client=mediaClient();
+    sqlite.prepare("UPDATE threads_posts SET status='queued' WHERE id=?").run(id);
+    await processPost(env,row(id),()=>client as any);
+    client.status.mockResolvedValueOnce({status});
+    await processPost(env,row(id),()=>client as any);
+    expect(row(id).status).toBe('failed');
+    expect(client.createCarousel).not.toHaveBeenCalled(); expect(client.publish).not.toHaveBeenCalled();
+  });
+  it('retains children on invalid token and resumes creation without losing or recreating them', async () => {
+    const id=await draft([image,video]); const client=mediaClient();
+    client.createMediaChild.mockResolvedValueOnce('201').mockRejectedValueOnce(new ThreadsError('threads_meta_190','invalid',422,190));
+    sqlite.prepare("UPDATE threads_posts SET status='queued' WHERE id=?").run(id);
+    await processPost(env,row(id),()=>client as any);
+    expect(row(id).status).toBe('queued'); expect(JSON.parse(row(id).media_children_json)).toHaveLength(1);
+    expect((sqlite.prepare('SELECT queue_paused FROM threads_accounts').get() as any).queue_paused).toBe(1);
+    sqlite.prepare("UPDATE threads_accounts SET status='connected',queue_paused=0").run();
+    client.createMediaChild.mockResolvedValueOnce('202');
+    await processPost(env,row(id),()=>client as any);
+    expect(JSON.parse(row(id).media_children_json).map((c:any)=>c.id)).toEqual(['201','202']);
+  });
+  it('bounds video polling and never retries an uncertain media publication', async () => {
+    const id=await draft([video]); const client=mediaClient();
+    sqlite.prepare("UPDATE threads_posts SET status='queued' WHERE id=?").run(id);
+    await processPost(env,row(id),()=>client as any);
+    client.publish.mockRejectedValueOnce(new Error('timeout'));
+    await processPost(env,row(id),()=>client as any);
+    expect(row(id).status).toBe('needs_review');
+    await processPost(env,row(id),()=>client as any);
+    expect(client.publish).toHaveBeenCalledTimes(1);
+    const slow=await draft([video]); sqlite.prepare("UPDATE threads_posts SET status='queued' WHERE id=?").run(slow);
+    await processPost(env,row(slow),()=>client as any);
+    client.status.mockResolvedValue({status:'IN_PROGRESS'});
+    for(let i=0;i<15;i++) await processPost(env,row(slow),()=>client as any);
+    expect(row(slow).error_code).toBe('container_status_timeout');
+    expect(row(slow).status).toBe('needs_review');
+  });
+});
+
+it('bounds child 404 polling and never creates an album from an unreadable child', async () => {
+  const media=[{type:'IMAGE',url:'https://cdn.example.com/a.png'},{type:'VIDEO',url:'https://cdn.example.com/b.mp4'}];
+  sqlite.prepare("UPDATE threads_posts SET status='processing',media_json=?,media_children_json=? WHERE id='draft'").run(JSON.stringify(media),JSON.stringify([{id:'201',ready:true,checks:0},{id:'202',ready:false,checks:0}]));
+  const client={publishingLimits:async()=>({posts:{remaining:250}}),status:vi.fn(async()=>{throw new ThreadsError('threads_http_404','not visible',502,undefined,undefined,404);}),createCarousel:vi.fn(),publish:vi.fn()};
+  for(let i=0;i<15;i++) await processPost(env,row(),()=>client as any);
+  expect(row().status).toBe('needs_review');expect(row().error_code).toBe('container_child_timeout');
+  await processPost(env,row(),()=>client as any);
+  expect(client.status).toHaveBeenCalledTimes(15);expect(client.createCarousel).not.toHaveBeenCalled();expect(client.publish).not.toHaveBeenCalled();
+});
+
+it('preserves child state across an alarm and wakes the next media batch promptly', async () => {
+  sqlite.prepare("UPDATE threads_posts SET status='queued',scheduled_at=?,media_json=? WHERE id='draft'").run(new Date(Date.now()-1000).toISOString(),JSON.stringify(Array(4).fill({type:'IMAGE',url:'https://cdn.example.com/a.png'})));
+  const child=vi.spyOn(ThreadsApi.prototype,'createMediaChild').mockResolvedValue('201');
+  try {
+    const storage={setAlarm:vi.fn(),getAlarm:async()=>null,deleteAlarm:vi.fn()};
+    const before=Date.now(); await new ThreadsPublisher(schedulerState(storage) as any,env).alarm();
+    expect(child).toHaveBeenCalledTimes(3);expect(JSON.parse(row().media_children_json)).toHaveLength(3);
+    expect(row().status).toBe('processing');expect(storage.setAlarm.mock.lastCall?.[0]).toBeLessThan(before+10000);
+  } finally { child.mockRestore(); }
 });

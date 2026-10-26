@@ -2,7 +2,7 @@
 
 Meta Threadsの下書き・連投・予約投稿・インサイトを扱う、Cloudflare Worker + D1 + Durable Objects + React/Kumoの管理画面。MITライセンス。
 
-**OAuthログイン、自動トークン更新、画像投稿、成否不明投稿の照合UIは未実装です。** Metaで取得したThreadsユーザートークンを貼り付けて接続します。実アカウントでの投稿E2Eは未検証です。
+**OAuthログイン、自動トークン更新、成否不明投稿の照合UIは未実装です。** Metaで取得したThreadsユーザートークンを貼り付けて接続します。実アカウントでテキスト1件の公開と6指標取得を確認済みです。画像・動画・カルーセルの実Meta公開は未検証です。
 
 ## はじめる
 
@@ -30,3 +30,5 @@ python3 -m unittest discover -s test -p 'test_*.py'
 
 [旧Pythonワークフロー](docs/legacy-workflow.md)は下書き転送専用です。必要な環境変数は同ガイドを参照してください。
 `npm run build:wfp-bundle` はWorker・アセット・新規DB用schema・DO定義を `dist-worker/wfp-bundle` に出力します。既存DBにschemaを再実行しないでください。秘密・所有者管理・ルーティング・既存テナントのmigrationはcontrol plane側の責任です。
+
+画像・動画1件、画像/動画混在のカルーセル2〜20件を公開HTTPS URLで保存・予約できます。端末からのアップロードは未対応です。[操作・素材仕様](docs/manual/06-operations.md)。

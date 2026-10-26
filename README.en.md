@@ -2,7 +2,7 @@
 
 A self-hosted Cloudflare Worker with D1, Durable Objects and a React/Kumo console for text drafts, chains, scheduled publication and saved insights. MIT licensed.
 
-This alpha requires a **Threads user access token pasted into the console**. OAuth sign-in, automatic token refresh, image publishing and a reconciliation UI are not implemented. Live posting end-to-end is not verified.
+This alpha requires a **Threads user access token pasted into the console**. OAuth sign-in, automatic token refresh and a reconciliation UI are not implemented. One live text publication and six insight metrics have been verified. Live Meta media publication remains unverified.
 
 Create a Meta app with the Threads use case, invite your Threads profile as a tester and accept the invitation in Threads account settings → Website permissions. Grant `threads_basic`, `threads_content_publish`, and `threads_manage_insights`. Exchange a short-lived token for a long-lived token using the official server-side procedure. Do not use a Facebook, Instagram or app token in the connection form.
 
@@ -13,3 +13,5 @@ Use Node 22, `npm ci`, `npm run check`, and `python3 -m unittest discover -s tes
 [Japanese setup and operating manual](docs/manual/README.md) · [Security](SECURITY.md) · [Upgrade](docs/manual/10-upgrade.md)
 
 Version 0.1.2 keeps unattempted jobs queued when a token becomes invalid; reconnect and explicitly resume after reviewing overdue drafts. Quotas are checked when booking and executing; future capacity is not guaranteed. Reply quota checks require threads_manage_replies. Emoji clusters count as UTF-8 bytes toward the 500-unit budget. Apply migration 0006 before deploying this version.
+
+Version 0.1.3 adds single images/videos and mixed carousels (2–20 items), using public HTTPS URLs. Captions are optional. Direct file uploads are not supported. Apply migration 0007 before deployment; preserve credentials and historical containers.

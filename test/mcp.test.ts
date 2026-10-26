@@ -34,6 +34,16 @@ describe('Threads stdio MCP', () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
     await client.close(); await server.close();
   });
+  it('saves mixed-media drafts without queueing and rejects invalid attachment URLs', async () => {
+    const fetcher = vi.fn(async () => Response.json({success:true,data:{id:'media'}}));
+    const {server}=createServer(config,fetcher); const client=new Client({name:'test',version:'1'});
+    const [a,b]=InMemoryTransport.createLinkedPair(); await server.connect(a); await client.connect(b);
+    const media=[{type:'IMAGE',url:'https://cdn.example.com/a.png'},{type:'VIDEO',url:'https://cdn.example.com/a.mp4'}];
+    expect((await client.callTool({name:'threads_create_draft',arguments:{accountId:'123',media}})).isError).not.toBe(true);
+    expect(JSON.parse(fetcher.mock.calls[0][1].body)).toEqual({accountId:'123',text:'',media});
+    expect((await client.callTool({name:'threads_create_draft',arguments:{accountId:'123',media:[{type:'IMAGE',url:'http://localhost/a'}]}})).isError).toBe(true);
+    expect(fetcher).toHaveBeenCalledTimes(1); await client.close(); await server.close();
+  });
   it('does not retry ambiguous mutations or echo upstream messages', async () => {
     const fetcher = vi.fn(async () => { throw new Error('secret-url'); });
     await expect(createApi(config, fetcher)('/posts', 'POST', {})).rejects.toThrow('Check saved state');

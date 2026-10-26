@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.3 — 2026-10-26
+
+- Public HTTPS image/video URLs and mixed carousels (2–20 items) in drafts, scheduling, UI and MCP; optional media captions. No file hosting/upload.
+- Persisted child container order/readiness, bounded creation and polling, no retry after ambiguous mutations.
+- Migration 0007 preserves text posts, credentials, IDs and history. Apply before deploying.
+- Unit and workerd fixtures cover media creation/publication with mocked Meta. Real media publishing awaits content approval; one real text publication and six insight metrics verified separately.
+
 ## 0.1.2 — 2026-10-26
 
 - Retain queued work on invalid tokens and require explicit resume after reconnecting.
