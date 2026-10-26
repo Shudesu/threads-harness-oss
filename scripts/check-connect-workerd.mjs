@@ -87,9 +87,15 @@ try {
     assert.equal(response.status,201);
     const id = (await response.json()).data.id;
     assert.equal((await request(`/posts/${id}/queue`,'POST',{scheduledAt:new Date(Date.now()+1800000).toISOString()})).status,200);
+    if (media.length > 1) {
+      // A token rejection after the first child leaves the post queued with
+      // prepared children. Cancelling must make later asset edits start fresh.
+      await db.prepare('UPDATE threads_posts SET media_children_json=? WHERE id=?').bind(JSON.stringify([{id:'old-child',ready:false,checks:0}]),id).run();
+    }
     assert.equal((await request(`/posts/${id}/cancel`,'POST',{})).status,200);
-    const saved = await db.prepare('SELECT status,media_json FROM threads_posts WHERE id=?').bind(id).first();
-    assert.equal(saved.status,'draft'); assert.deepEqual(JSON.parse(saved.media_json),media); mediaDrafts++;
+    const saved = await db.prepare('SELECT status,media_json,media_children_json,container_id,status_check_count FROM threads_posts WHERE id=?').bind(id).first();
+    assert.equal(saved.status,'draft'); assert.deepEqual(JSON.parse(saved.media_json),media);
+    assert.deepEqual(JSON.parse(saved.media_children_json),[]); assert.equal(saved.container_id,null); assert.equal(saved.status_check_count,0); mediaDrafts++;
   }
   console.log(JSON.stringify({ connectionStatus: connected.status, accounts: 1, draftStatus: draft.status, drafts: 1, mediaDrafts, mediaQueueAndCancel: mediaDrafts, durableObjectQueueStatus: queued.status, preservedErrorKind: denied.kind, outboundReadOnlyChecks: outboundCalls, publications: 0 }));
 } finally {
