@@ -25,7 +25,7 @@ export function createApi(config, request = fetch) {
 }
 export function createServer(config, request = fetch) {
   const api = createApi(config, request);
-  const server = new McpServer({ name: 'threads-harness', version: '0.1.4' });
+  const server = new McpServer({ name: 'threads-harness', version: '0.1.5' });
   const id = z.string().min(1).max(128);
   const text = z.string().min(1).refine(s => validThreadsText(s), 'Text must fit 500 units; emoji clusters count as UTF-8 bytes.');
   const media = z.array(z.object({ type: z.enum(['IMAGE','VIDEO']), url: z.string().refine(validMediaUrl, 'Public HTTPS media URL required.') })).max(20);

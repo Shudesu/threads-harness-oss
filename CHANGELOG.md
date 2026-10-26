@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.5 — 2026-10-26
+
+- Align the Threads console with the Harness sidebar, account switcher, mobile menu, page headers, cards and Kumo controls. Separate dashboard, posts, composer, schedule, insights and account settings.
+- Add account-scoped overview totals independent of the latest-200 list; preserve unknown metrics instead of inventing zeros.
+- Auto-enter existing SSO sessions, preserve unsaved work between pages, and review every chain part/attachment/account/time before queueing. Recheck changed drafts and prevent duplicate clicks.
+- No database migration beyond 0007. Existing tokens, posts, schedules and publisher behavior are retained.
+
 ## 0.1.4 — 2026-10-26
 
 - Fix cancelled, partially prepared carousels retaining old child containers after attachment edits. Cancellation now clears unpublished preparation while preserving the draft, attachments and published history. No database migration is required beyond 0007.
