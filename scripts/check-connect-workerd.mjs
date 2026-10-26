@@ -97,7 +97,12 @@ try {
     assert.equal(saved.status,'draft'); assert.deepEqual(JSON.parse(saved.media_json),media);
     assert.deepEqual(JSON.parse(saved.media_children_json),[]); assert.equal(saved.container_id,null); assert.equal(saved.status_check_count,0); mediaDrafts++;
   }
-  console.log(JSON.stringify({ connectionStatus: connected.status, accounts: 1, draftStatus: draft.status, drafts: 1, mediaDrafts, mediaQueueAndCancel: mediaDrafts, durableObjectQueueStatus: queued.status, preservedErrorKind: denied.kind, outboundReadOnlyChecks: outboundCalls, publications: 0 }));
+  const overviewResponse = await request('/overview?accountId=456');
+  assert.equal(overviewResponse.status,200);
+  const overview = (await overviewResponse.json()).data;
+  assert.equal(overview.total,4); assert.equal(overview.drafts,3); assert.equal(overview.queued,1);
+  assert.equal(overview.published,0); assert.equal(overview.views,null);
+  console.log(JSON.stringify({ connectionStatus: connected.status, accounts: 1, draftStatus: draft.status, drafts: 1, mediaDrafts, mediaQueueAndCancel: mediaDrafts, overview: true, durableObjectQueueStatus: queued.status, preservedErrorKind: denied.kind, outboundReadOnlyChecks: outboundCalls, publications: 0 }));
 } finally {
   await mf.dispose();
 }

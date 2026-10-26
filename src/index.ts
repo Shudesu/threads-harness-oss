@@ -41,7 +41,7 @@ async function recordAccountFailure(env: Bindings, id: string, cipher: string, e
   await env.DB.prepare("UPDATE threads_accounts SET last_error_code=?, last_error_kind=?, queue_paused=CASE WHEN ? THEN 1 ELSE queue_paused END, status=CASE WHEN ? THEN 'reauth_required' ELSE status END, updated_at=? WHERE id=? AND token_cipher=?")
     .bind(error.code, error.kind, Number(invalid), Number(invalid), now(), id, cipher).run();
 }
-app.get('/health', c => c.json({ status: 'ok', product: 'threads', version: '0.1.4' }));
+app.get('/health', c => c.json({ status: 'ok', product: 'threads', version: '0.1.5' }));
 app.route('/', adminSso);
 app.use('/api/*', async (c, next) => {
   if (!c.env.API_KEY) return c.json(fail('Service not configured'), 503);
@@ -129,6 +129,26 @@ app.get('/api/posts', async c => {
   const account = c.req.query('accountId');
   if (!account) return c.json(fail('accountId required'), 400);
   return c.json(ok((await c.env.DB.prepare("SELECT * FROM threads_posts WHERE account_id = ? AND status != 'archived' ORDER BY created_at DESC LIMIT 200").bind(account).all()).results));
+});
+app.get('/api/overview', async c => {
+  const accountId = c.req.query('accountId');
+  if (!accountId) return c.json(fail('accountId required'), 400);
+  if (!await c.env.DB.prepare('SELECT id FROM threads_accounts WHERE id=?').bind(accountId).first()) return c.json(fail('アカウントがありません'), 404);
+  const result = await c.env.DB.prepare(`SELECT COUNT(*) AS total,
+    COALESCE(SUM(status='draft'),0) AS drafts,
+    COALESCE(SUM(status IN ('queued','creating','processing','publishing')),0) AS queued,
+    COALESCE(SUM(status='published'),0) AS published,
+    COALESCE(SUM(status IN ('needs_review','failed')),0) AS needsReview,
+    COUNT(CASE WHEN status='published' THEN views END) AS measured,
+    SUM(CASE WHEN status='published' THEN views END) AS views,
+    SUM(CASE WHEN status='published' THEN likes END) AS likes,
+    SUM(CASE WHEN status='published' THEN replies END) AS replies,
+    SUM(CASE WHEN status='published' THEN reposts END) AS reposts,
+    SUM(CASE WHEN status='published' THEN quotes END) AS quotes,
+    SUM(CASE WHEN status='published' THEN shares END) AS shares,
+    MAX(CASE WHEN status='published' THEN insights_updated_at END) AS insightsUpdatedAt
+    FROM threads_posts WHERE account_id=? AND status!='archived'`).bind(accountId).first();
+  return c.json(ok(result));
 });
 app.post('/api/posts', async c => {
   const { text = '', accountId, media = [] } = await c.req.json();

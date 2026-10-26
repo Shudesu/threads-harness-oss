@@ -739,3 +739,23 @@ describe('media interruption boundaries',()=>{
     expect(row(ids[0]).status).toBe('queued');expect(row(ids[1]).status).toBe('processing');expect(JSON.parse(row(ids[1]).media_children_json)).toEqual(children);
   });
 });
+
+it('summarizes the complete selected account without hiding overflow or inventing missing metrics', async () => {
+  expect((await request('/overview')).status).toBe(400);
+  expect((await request('/overview?accountId=missing')).status).toBe(404);
+  expect((await request('/overview?accountId=123','GET',undefined,false)).status).toBe(401);
+  const insert=sqlite.prepare('INSERT INTO threads_posts(id,account_id,text,status,created_at,updated_at,views,likes) VALUES(?,?,?,?,?,?,?,?)');
+  for(let i=0;i<205;i++)insert.run('more-'+i,'123','caption','draft','2026-10-26','2026-10-26',null,null);
+  for(const status of ['queued','creating','processing','publishing','failed','needs_review'])insert.run(status,'123','caption',status,'2026-10-26','2026-10-26',null,null);
+  insert.run('known','123','caption','published','2026-10-26','2026-10-26',0,2);
+  insert.run('unknown','123','caption','published','2026-10-26','2026-10-26',null,null);
+  insert.run('hidden','123','caption','archived','2026-10-26','2026-10-26',1000,1000);
+  sqlite.prepare('INSERT INTO threads_accounts(id,username,created_at,updated_at) VALUES(?,?,?,?)').run('other','other','2026-10-26','2026-10-26');
+  insert.run('other-post','other','caption','published','2026-10-26','2026-10-26',999,999);
+  const result=await (await request('/overview?accountId=123')).json() as any;
+  expect(result.data).toMatchObject({total:214,drafts:206,queued:4,published:2,needsReview:2,measured:1,views:0,likes:2,shares:null});
+  expect((await (await request('/posts?accountId=123')).json() as any).data).toHaveLength(200);
+  sqlite.prepare("DELETE FROM threads_posts WHERE account_id='other'").run();
+  const empty=await (await request('/overview?accountId=other')).json() as any;
+  expect(empty.data).toMatchObject({total:0,drafts:0,published:0,measured:0,views:null,likes:null});
+});
