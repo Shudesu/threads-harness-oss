@@ -1,0 +1,8 @@
+# Copy to .dev.vars; generate local-only secrets. Never copy production secrets.
+API_KEY=
+# Exactly 32 random bytes, base64 encoded: openssl rand -base64 32
+TOKEN_ENCRYPTION_KEY=
+# Optional SSO: >=32 characters, shared only with a trusted issuer.
+ADMIN_SSO_SECRET=
+# Optional inspection credential for non-testers; same Threads app as user tokens.
+THREADS_APP_ACCESS_TOKEN=

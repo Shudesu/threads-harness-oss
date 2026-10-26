@@ -1,3 +1,4 @@
+// Standalone configuration. Replace the D1 ID before deployment.
 {
   "name": "threads-harness",
   "main": "src/index.ts",
@@ -35,5 +36,12 @@
         "ThreadsPublisher"
       ]
     }
-  ]
+  ],
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": false
+    }
+  }
 }
