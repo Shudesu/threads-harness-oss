@@ -42,7 +42,7 @@ async function recordAccountFailure(env: Bindings, id: string, cipher: string, e
   await env.DB.prepare("UPDATE threads_accounts SET last_error_code=?, last_error_kind=?, queue_paused=CASE WHEN ? THEN 1 ELSE queue_paused END, status=CASE WHEN ? THEN 'reauth_required' ELSE status END, updated_at=? WHERE id=? AND token_cipher=?")
     .bind(error.code, error.kind, Number(invalid), Number(invalid), now(), id, cipher).run();
 }
-app.get('/health', c => c.json({ status: 'ok', product: 'threads', version: '0.2.0' }));
+app.get('/health', c => c.json({ status: 'ok', product: 'threads', version: '0.2.1' }));
 app.get('/openapi.json', c => { c.header('Cache-Control', 'public, max-age=3600'); return c.json(openapi); });
 app.route('/', adminSso);
 app.use('/api/*', async (c, next) => {
@@ -183,6 +183,9 @@ app.get('/api/overview', async c => {
     COALESCE(SUM(status='draft'),0) AS drafts,
     COALESCE(SUM(status IN ('queued','creating','processing','publishing')),0) AS queued,
     COALESCE(SUM(status='published'),0) AS published,
+    COALESCE(SUM(status IN ('creating','processing','publishing')),0) AS processing,
+    MIN(CASE WHEN status='queued' THEN scheduled_at END) AS nextScheduledAt,
+    MAX(CASE WHEN status='published' THEN updated_at END) AS lastPublishedAt,
     COALESCE(SUM(status IN ('needs_review','failed')),0) AS needsReview,
     COUNT(CASE WHEN status='published' THEN views END) AS measured,
     SUM(CASE WHEN status='published' THEN views END) AS views,

@@ -802,7 +802,7 @@ it('keeps account B publishable when an invalid token pauses account A',async()=
 });
 it('serves a secret-free OpenAPI document covering every public REST route',async()=>{
   const response=await app.request('https://test/openapi.json',{},env);expect(response.status).toBe(200);
-  const spec=await response.json() as any;expect(spec.openapi).toBe('3.1.0');expect(spec.info.version).toBe('0.2.0');
+  const spec=await response.json() as any;expect(spec.openapi).toBe('3.1.0');expect(spec.info.version).toBe('0.2.1');
   const ids:string[]=[];
   for(const route of app.routes.filter(r=>r.method!=='ALL' && (r.path.startsWith('/api/') || ['/health','/openapi.json'].includes(r.path)))){
     const path=route.path.replace(/:([^/]+)/g,'{$1}');const operation=spec.paths[path]?.[route.method.toLowerCase()];expect(operation,path+' '+route.method).toBeTruthy();ids.push(operation.operationId);
@@ -818,4 +818,17 @@ it('does not treat malformed expected-account JSON as a legacy unscoped mutation
     expect(res.status).toBe(400);expect((await res.json() as any).code).toBe('invalid_request');
   }
   expect(JSON.stringify(row())).toBe(before);
+});
+
+it('returns the next queued time and last publication across the whole account, not only the latest page',async()=>{
+ const insert=sqlite.prepare('INSERT INTO threads_posts(id,account_id,text,status,created_at,updated_at,scheduled_at) VALUES(?,?,?,?,?,?,?)');
+ for(let i=0;i<205;i++)insert.run('dashboard-'+i,'123','draft','draft','2026-10-26T00:00:00Z','2026-10-26T00:00:00Z',null);
+ insert.run('old-future','123','future','queued','2026-01-01','2026-01-01','2099-01-01T00:00:00Z');
+ insert.run('new-future','123','future','queued','2026-10-26','2026-10-26','2099-02-01T00:00:00Z');
+ insert.run('processing-now','123','processing','processing','2026-10-26','2026-10-26',null);
+ insert.run('published-last','123','published','published','2026-10-25','2026-10-26T01:02:03Z',null);
+ insert.run('archived-future','123','archived','archived','2026-10-26','2099-03-01','2098-01-01T00:00:00Z');
+ const result=(await (await request('/overview?accountId=123')).json() as any).data;
+ expect(result).toMatchObject({queued:3,processing:1,nextScheduledAt:'2099-01-01T00:00:00Z',lastPublishedAt:'2026-10-26T01:02:03Z'});
+ const page=(await (await request('/posts?accountId=123')).json() as any).data;expect(page.some((p:any)=>p.id==='old-future')).toBe(false);
 });

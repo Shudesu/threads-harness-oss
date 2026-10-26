@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1 — 2026-10-26
+
+- Simplify the dashboard around the selected account and one context-aware next action. Prioritize connection/expiry problems, uncertain publications, paused reservations and unsaved drafts.
+- Use three clear status totals, compact recent activity, saved reaction metrics and explicit scheduling/connection details. Keep the availability notice secondary. No invented trend charts or live-metric claims.
+- Extend the account overview with processing count, next queued time and last publication receipt across all non-archived rows. No schema migration or publisher changes.
+
 ## 0.2.0 — 2026-10-26
 
 - Begin regular availability of the implemented Threads features; retain explicit OAuth, refresh, upload and scheduling limitations.

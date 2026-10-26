@@ -11,7 +11,7 @@ export type Filter = "all" | "draft" | "queued" | "published" | "review";
 export const pages: Record<Page, { title: string; description: string }> = {
   dashboard: {
     title: "ダッシュボード",
-    description: "投稿の状況と、次に必要な操作を確認できます。",
+    description: "投稿の準備と公開状況を、ひと目で確認。",
   },
   posts: {
     title: "投稿管理",
@@ -86,6 +86,9 @@ export type Overview = Metrics & {
   needsReview: number;
   measured: number;
   insightsUpdatedAt: string | null;
+  processing: number;
+  nextScheduledAt: string | null;
+  lastPublishedAt: string | null;
 };
 export type Limits = {
   posts: { remaining: number; total: number };

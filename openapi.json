@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Threads Harness API",
-    "version": "0.2.0",
+    "version": "0.2.1",
     "description": "同一ワークスペースで複数Threadsアカウントを管理するREST API。Bearer APIキーは環境全体の管理者権限です。accountIdは投稿先の取り違え防止であり、権限分離ではありません。OAuth・自動トークン更新・直接ファイルアップロードは未対応。成否不明の更新/公開は自動再試行せず保存状態を照合してください。"
   },
   "servers": [
@@ -509,6 +509,25 @@
               "string",
               "null"
             ]
+          },
+          "processing": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "準備・処理・公開中の件数"
+          },
+          "nextScheduledAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "公開待ちのうち最も早い処理開始日時。停止中の場合も保存日時を返す。"
+          },
+          "lastPublishedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "非表示を除く公開済み原稿の最新の公開結果保存日時。"
           }
         }
       },

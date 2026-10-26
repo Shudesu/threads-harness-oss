@@ -1,3 +1,4 @@
+import { Dashboard } from "./dashboard";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@cloudflare/kumo/components/button";
 import {
@@ -660,7 +661,7 @@ export function App() {
             </h1>
             <p>
               {pages[page].description}
-              {activeAccount && (
+              {activeAccount && page !== "dashboard" && (
                 <span className="page-account">
                   {" "}
                   · @{activeAccount.username}
@@ -669,7 +670,10 @@ export function App() {
             </p>
           </div>
           <div className="button-row">
-            {page !== "compose" && page !== "accounts" && newButton}
+            {page !== "compose" &&
+              page !== "accounts" &&
+              page !== "dashboard" &&
+              newButton}
             <Button disabled={busy} onClick={() => void run(() => refresh())}>
               更新
             </Button>
@@ -690,7 +694,7 @@ export function App() {
             {pollError}
           </div>
         )}
-        {needsAttention && page !== "accounts" && (
+        {needsAttention && page !== "accounts" && page !== "dashboard" && (
           <div className="alert alert-warning row-between">
             <span>{attention}</span>
             <Button size="sm" onClick={() => navigate("accounts")}>
@@ -699,135 +703,32 @@ export function App() {
           </div>
         )}
         {page === "dashboard" && (
-          <div className="alert alert-info row-between">
-            <span>
-              <strong>Threadsの正式提供を開始しました</strong>
-              <br />
-              複数アカウント・メディア投稿・MCP/API連携に対応しています。
-            </span>
-            <Button size="sm" onClick={() => navigate("integrations")}>
-              連携方法を見る
-            </Button>
-          </div>
-        )}
-        {page === "dashboard" && (
-          <>
-            {!activeAccount ? (
-              <Panel>{accountEmpty}</Panel>
-            ) : (
-              <>
-                <div className="stats-grid">
-                  {(
-                    [
-                      {
-                        title: "下書き",
-                        count: overview?.drafts,
-                        to: "posts",
-                        filter: "draft",
-                        icon: "posts",
-                      },
-                      {
-                        title: "公開待ち・処理中",
-                        count: overview?.queued,
-                        to: "schedule",
-                        filter: "queued",
-                        icon: "schedule",
-                      },
-                      {
-                        title: "公開済み",
-                        count: overview?.published,
-                        to: "posts",
-                        filter: "published",
-                        icon: "check",
-                      },
-                      {
-                        title: "要確認・停止",
-                        count: overview?.needsReview,
-                        to: "posts",
-                        filter: "review",
-                        icon: "help",
-                      },
-                    ] as const
-                  ).map((stat) => (
-                    <button
-                      className="stat-card"
-                      key={stat.title}
-                      onClick={() => {
-                        setFilter(stat.filter);
-                        setSearch("");
-                        navigate(stat.to);
-                      }}
-                    >
-                      <div className="row-between">
-                        <span>{stat.title}</span>
-                        <span className="stat-icon">
-                          <Icon name={stat.icon} />
-                        </span>
-                      </div>
-                      <strong>{numberLabel(stat.count)}</strong>
-                      <span className="stat-link">
-                        一覧を見る <Icon name="arrow" size={16} />
-                      </span>
-                    </button>
-                  ))}
-                </div>
-                <p className="field-help stats-note">
-                  選択中のアカウントの件数です。連投は各投稿を1件として数え、非表示の原稿は含みません。
-                </p>
-                <div className="dashboard-grid">
-                  <Panel
-                    title="最近の投稿"
-                    action={
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => {
-                          setFilter("all");
-                          setSearch("");
-                          navigate("posts");
-                        }}
-                      >
-                        すべて見る
-                      </Button>
-                    }
-                  >
-                    {groups.length ? (
-                      <PostList
-                        groups={groups.slice(0, 4)}
-                        {...listProps}
-                        compact
-                      />
-                    ) : (
-                      <Empty
-                        title="まだ投稿がありません"
-                        description="最初の原稿を下書きに保存しましょう。"
-                        action={newButton}
-                      />
-                    )}
-                  </Panel>
-                  <div className="stack">
-                    {quotaPanel}
-                    <Panel title="接続アカウント">
-                      <div className="preview-account">
-                        <span className="account-avatar">@</span>
-                        <div>
-                          <strong>@{activeAccount.username}</strong>
-                          <Status status={activeAccount.status} />
-                        </div>
-                      </div>
-                      <p className="small muted">
-                        トークン期限:{" "}
-                        {dateLabel(activeAccount.token_expires_at)}
-                      </p>
-                      <Button onClick={() => navigate("accounts")}>
-                        アカウント設定
-                      </Button>
-                    </Panel>
-                  </div>
-                </div>
-              </>
-            )}
-          </>
+          <Dashboard
+            account={activeAccount}
+            accountCount={accounts.length}
+            overview={overview}
+            groups={groups}
+            busy={busy}
+            unsaved={dirty}
+            navigate={(next, nextFilter) => {
+              if (nextFilter) setFilter(nextFilter);
+              setSearch("");
+              navigate(next);
+            }}
+            startNew={startNew}
+            openGroup={(group) => {
+              setFilter("all");
+              setSearch("");
+              navigate("posts");
+              window.requestAnimationFrame(() => {
+                const target = document.getElementById(
+                  `post-group-${group.id}`,
+                );
+                target?.focus({ preventScroll: true });
+                target?.scrollIntoView?.({ block: "center" });
+              });
+            }}
+          />
         )}
         {(page === "posts" || page === "schedule") && (
           <Panel>
