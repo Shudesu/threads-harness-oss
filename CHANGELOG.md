@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.4 — 2026-10-26
+
+- Fix cancelled, partially prepared carousels retaining old child containers after attachment edits. Cancellation now clears unpublished preparation while preserving the draft, attachments and published history. No database migration is required beyond 0007.
+- Add interruption tests for D1 receipt failures, uncertain parent creation, token loss during child polling, exhausted quotas and cancellation guards. Production API negative checks made no new posts.
+
 ## 0.1.3 — 2026-10-26
 
 - Public HTTPS image/video URLs and mixed carousels (2–20 items) in drafts, scheduling, UI and MCP; optional media captions. No file hosting/upload.

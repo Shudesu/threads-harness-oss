@@ -646,3 +646,96 @@ it('preserves child state across an alarm and wakes the next media batch promptl
     expect(row().status).toBe('processing');expect(storage.setAlarm.mock.lastCall?.[0]).toBeLessThan(before+10000);
   } finally { child.mockRestore(); }
 });
+
+it('discards unpublished preparation when cancelling a partially prepared, paused carousel', async () => {
+  const oldMedia=[{type:'IMAGE',url:'https://cdn.example.com/old.png'},{type:'VIDEO',url:'https://cdn.example.com/old.mp4'}];
+  sqlite.prepare("UPDATE threads_posts SET status='queued',media_json=? WHERE id='draft'").run(JSON.stringify(oldMedia));
+  const client={publishingLimits:async()=>({posts:{remaining:250}}),createMediaChild:vi.fn().mockResolvedValueOnce('201').mockRejectedValueOnce(new ThreadsError('threads_meta_190','expired',422,190)),publish:vi.fn()};
+  await processPost(env,row(),()=>client as any);
+  expect(row().status).toBe('queued');expect(JSON.parse(row().media_children_json)).toHaveLength(1);
+  expect((await request('/posts/draft/cancel','POST',{})).status).toBe(200);
+  expect(row().status).toBe('draft');
+  expect(JSON.parse(row().media_children_json)).toEqual([]);
+  const replacement=[{type:'VIDEO',url:'https://cdn.example.com/new.mp4'},{type:'IMAGE',url:'https://cdn.example.com/new.png'}];
+  expect((await request('/posts/draft','PATCH',{media:replacement})).status).toBe(200);
+  sqlite.prepare("UPDATE threads_accounts SET status='connected',queue_paused=0").run();
+  sqlite.prepare("UPDATE threads_posts SET status='queued' WHERE id='draft'").run();
+  client.createMediaChild.mockResolvedValueOnce('301').mockResolvedValueOnce('302');
+  await processPost(env,row(),()=>client as any);
+  expect(client.createMediaChild.mock.calls.slice(2).map(call=>call[1])).toEqual(replacement);
+  expect(JSON.parse(row().media_children_json).map((c:any)=>c.id)).toEqual(['301','302']);
+  expect(row().published_id).toBeNull();expect(client.publish).not.toHaveBeenCalled();
+});
+
+describe('media interruption boundaries',()=>{
+  const media=[{type:'IMAGE',url:'https://cdn.example.com/a.png'},{type:'VIDEO',url:'https://cdn.example.com/b.mp4'}];
+  const children=[{id:'201',ready:true,checks:0},{id:'202',ready:true,checks:0}];
+  function failWriteOnce(pattern: string) {
+    const original=env.DB.prepare;let failed=false;
+    env.DB.prepare=(sql:string)=>{
+      const statement=original(sql),bind=statement.bind;
+      statement.bind=(...args:unknown[])=>{
+        const bound=bind(...args);
+        if(sql.includes(pattern)) { const run=bound.run;bound.run=async()=>{if(!failed){failed=true;throw Error('injected D1 outage');}return run();}; }
+        return bound;
+      }; return statement;
+    };
+  }
+  function setup(phase='processing') {
+    sqlite.prepare('UPDATE threads_posts SET status=?,media_json=?,media_children_json=? WHERE id=?').run(phase,JSON.stringify(media),JSON.stringify(children),'draft');
+    return {publishingLimits:vi.fn(async()=>({posts:{remaining:250}})),createMediaChild:vi.fn(async()=> '203'),createCarousel:vi.fn(async()=> '301'),status:vi.fn(async()=>({status:'FINISHED'})),publish:vi.fn(async()=> '401')};
+  }
+  it('never repeats a child create whose response could not be saved to D1',async()=>{
+    const client=setup('queued'); sqlite.prepare("UPDATE threads_posts SET media_children_json='[]' WHERE id='draft'").run();
+    failWriteOnce('SET media_children_json=?');
+    await processPost(env,row(),()=>client as any);expect(row().status).toBe('needs_review');
+    await processPost(env,row(),()=>client as any);expect(client.createMediaChild).toHaveBeenCalledTimes(1);expect(client.publish).not.toHaveBeenCalled();
+  });
+  it('never recreates a parent after an ambiguous creation response',async()=>{
+    const client=setup();client.createCarousel.mockRejectedValueOnce(Error('timeout'));
+    await processPost(env,row(),()=>client as any);expect(row().status).toBe('needs_review');
+    await processPost(env,row(),()=>client as any);expect(client.createCarousel).toHaveBeenCalledTimes(1);expect(client.publish).not.toHaveBeenCalled();
+    expect(JSON.parse(row().media_children_json)).toEqual(children);
+  });
+  it('never recreates a parent whose successful response could not be persisted',async()=>{
+    const client=setup();failWriteOnce("SET status='processing', container_id=?");
+    await processPost(env,row(),()=>client as any);expect(row().status).toBe('needs_review');
+    await processPost(env,row(),()=>client as any);expect(client.createCarousel).toHaveBeenCalledTimes(1);expect(client.publish).not.toHaveBeenCalled();
+  });
+  it('does not repeat an already-successful publish if the receipt save fails',async()=>{
+    const client=setup();sqlite.prepare("UPDATE threads_posts SET container_id='301' WHERE id='draft'").run();
+    failWriteOnce("SET status='published', published_id=?");
+    await processPost(env,row(),()=>client as any);expect(row().status).toBe('needs_review');
+    await processPost(env,row(),()=>client as any);expect(client.publish).toHaveBeenCalledTimes(1);
+    expect(row().container_id).toBe('301');
+  });
+  it('preserves prepared children during quota exhaustion without creating or publishing',async()=>{
+    const client=setup();client.publishingLimits.mockResolvedValue({posts:{remaining:0}});
+    await processPost(env,row(),()=>client as any);
+    expect(row().status).toBe('processing');expect(row().error_code).toBe('quota_exhausted');
+    expect(JSON.parse(row().media_children_json)).toEqual(children);expect(client.createCarousel).not.toHaveBeenCalled();expect(client.publish).not.toHaveBeenCalled();
+    expect(Date.parse(row().next_attempt_at)).toBeGreaterThan(Date.now()+290000);
+  });
+  it('pauses on child-status token failure, retaining all previously prepared IDs for explicit resume',async()=>{
+    const client=setup();sqlite.prepare('UPDATE threads_posts SET media_children_json=? WHERE id=?').run(JSON.stringify(children.map(c=>({...c,ready:false}))),'draft');
+    client.status.mockRejectedValueOnce(new ThreadsError('threads_meta_190','invalid',422,190));
+    await processPost(env,row(),()=>client as any);
+    expect(row().status).toBe('processing');expect((sqlite.prepare('SELECT queue_paused FROM threads_accounts').get() as any).queue_paused).toBe(1);
+    expect(JSON.parse(row().media_children_json).map((c:any)=>c.id)).toEqual(['201','202']);expect(client.createCarousel).not.toHaveBeenCalled();
+    sqlite.prepare("UPDATE threads_accounts SET status='connected',queue_paused=0").run();
+    await processPost(env,row(),()=>client as any);expect(client.createCarousel).toHaveBeenCalledWith('123','Hello',['201','202'],undefined);expect(client.createMediaChild).not.toHaveBeenCalled();
+  });
+  it.each(['PUBLISHED','UNKNOWN'])('quarantines unexpected child status %s instead of building a parent',async status=>{
+    const client=setup();sqlite.prepare('UPDATE threads_posts SET media_children_json=? WHERE id=?').run(JSON.stringify(children.map(c=>({...c,ready:false}))),'draft');
+    client.status.mockResolvedValue({status});await processPost(env,row(),()=>client as any);
+    expect(row().status).toBe('needs_review');expect(client.createCarousel).not.toHaveBeenCalled();expect(client.publish).not.toHaveBeenCalled();
+  });
+  it('keeps the history of all chain parts on a failed partial cancellation',async()=>{
+    const res=await request('/chains','POST',{accountId:'123',parts:['first',{text:'second',media}]});
+    const {ids}=(await res.json() as any).data;
+    sqlite.prepare("UPDATE threads_posts SET status='queued' WHERE id=?").run(ids[0]);
+    sqlite.prepare("UPDATE threads_posts SET status='processing',media_children_json=? WHERE id=?").run(JSON.stringify(children),ids[1]);
+    expect((await request(`/posts/${ids[0]}/cancel`,'POST',{})).status).toBe(409);
+    expect(row(ids[0]).status).toBe('queued');expect(row(ids[1]).status).toBe('processing');expect(JSON.parse(row(ids[1]).media_children_json)).toEqual(children);
+  });
+});

@@ -41,7 +41,7 @@ async function recordAccountFailure(env: Bindings, id: string, cipher: string, e
   await env.DB.prepare("UPDATE threads_accounts SET last_error_code=?, last_error_kind=?, queue_paused=CASE WHEN ? THEN 1 ELSE queue_paused END, status=CASE WHEN ? THEN 'reauth_required' ELSE status END, updated_at=? WHERE id=? AND token_cipher=?")
     .bind(error.code, error.kind, Number(invalid), Number(invalid), now(), id, cipher).run();
 }
-app.get('/health', c => c.json({ status: 'ok', product: 'threads', version: '0.1.3' }));
+app.get('/health', c => c.json({ status: 'ok', product: 'threads', version: '0.1.4' }));
 app.route('/', adminSso);
 app.use('/api/*', async (c, next) => {
   if (!c.env.API_KEY) return c.json(fail('Service not configured'), 503);
@@ -201,7 +201,7 @@ app.post('/api/posts/:id/queue', async c => {
 app.post('/api/posts/:id/cancel', async c => {
   const target = await chainTarget(c.env.DB, c.req.param('id'));
   if (!target) return c.json(fail('連投の先頭から操作してください'), 409);
-  const result = await c.env.DB.prepare(`UPDATE threads_posts SET status='draft', scheduled_at=NULL, next_attempt_at=NULL, error_code=NULL, error_kind=NULL, updated_at=? WHERE ${target.where} AND NOT EXISTS (SELECT 1 FROM threads_posts WHERE ${target.where} AND status != 'queued')`).bind(now(), target.id, target.id).run();
+  const result = await c.env.DB.prepare(`UPDATE threads_posts SET status='draft', scheduled_at=NULL, next_attempt_at=NULL, error_code=NULL, error_kind=NULL, container_id=NULL, media_children_json='[]', status_check_count=0, updated_at=? WHERE ${target.where} AND NOT EXISTS (SELECT 1 FROM threads_posts WHERE ${target.where} AND status != 'queued')`).bind(now(), target.id, target.id).run();
   if (!result.meta.changes) return c.json(fail('処理開始後は取り消せません'), 409);
   return c.json(ok({ cancelled: true }));
 });
