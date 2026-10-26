@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0 — 2026-10-26
+
+- Begin regular availability of the implemented Threads features; retain explicit OAuth, refresh, upload and scheduling limitations.
+- Add multi-account directory/session selection and an MCP/API setup page. Account-scoped drafts, metrics and schedulers remain isolated within the workspace admin boundary.
+- Publish OpenAPI 3.1, cursor-paginated post listing and account-specific single-post retrieval. Optional accountId on legacy post mutations prevents accidental wrong-account operations.
+- Expand local stdio MCP to 16 tools, default to read-only, require accountId for post mutations and verify target ownership before writes. MCP list output is now items/pagination. No database migration.
+
 ## 0.1.5 — 2026-10-26
 
 - Align the Threads console with the Harness sidebar, account switcher, mobile menu, page headers, cards and Kumo controls. Separate dashboard, posts, composer, schedule, insights and account settings.

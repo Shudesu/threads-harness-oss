@@ -81,14 +81,19 @@ beforeEach(() => {
       body = init?.body ? JSON.parse(String(init.body)) : undefined;
     calls.push({ path, method, body });
     let data: any;
+    const scopedPosts = posts.filter(
+      (p) =>
+        p.account_id ===
+        new URL(input, "https://fixture.test").searchParams.get("accountId"),
+    );
     if (path === "/api/accounts" && method === "GET") data = accounts;
-    else if (path.startsWith("/api/posts?")) data = posts;
+    else if (path.startsWith("/api/posts?")) data = scopedPosts;
     else if (path.startsWith("/api/overview?"))
       data = {
-        total: posts.length,
-        drafts: posts.filter((p) => p.status === "draft").length,
-        queued: posts.filter((p) => p.status === "queued").length,
-        published: posts.filter((p) => p.status === "published").length,
+        total: scopedPosts.length,
+        drafts: scopedPosts.filter((p) => p.status === "draft").length,
+        queued: scopedPosts.filter((p) => p.status === "queued").length,
+        published: scopedPosts.filter((p) => p.status === "published").length,
         needsReview: 0,
         measured: 0,
         views: null,
@@ -273,7 +278,11 @@ it("reviews the complete chain and attachments, then queues the head exactly onc
     "公開待ちに登録しました。処理が完了すると公開済みに変わります。",
   );
   expect(writes()).toEqual([
-    { path: "/api/posts/head/queue", method: "POST", body: {} },
+    {
+      path: "/api/posts/head/queue",
+      method: "POST",
+      body: { accountId: "123" },
+    },
   ]);
 });
 it("does not queue when the saved content changed after opening the review", async () => {
@@ -311,6 +320,7 @@ it("requires a future schedule and sends the chosen timestamp only after review"
   await screen.findByText("指定日時から公開処理を開始します。");
   expect(writes()[0].body).toEqual({
     scheduledAt: new Date("2099-01-01T12:30").toISOString(),
+    accountId: "123",
   });
 });
 it("separates published posts and unknown insight values from empty or zero results", async () => {
@@ -430,7 +440,7 @@ it("takes a fresh workspace from the empty dashboard to connection without publi
     (screen.getByLabelText("Threadsアクセストークン") as HTMLInputElement)
       .value,
   ).toBe("");
-  expect(screen.getByText("@fixture_owner")).toBeTruthy();
+  expect(screen.getAllByText("@fixture_owner").length).toBeGreaterThan(0);
   expect(writes()).toEqual([
     {
       path: "/api/accounts",
@@ -438,4 +448,46 @@ it("takes a fresh workspace from the empty dashboard to connection without publi
       body: { accessToken: "fixture-meta-token" },
     },
   ]);
+});
+
+it("restores the selected account and keeps its posts isolated while switching from the directory", async () => {
+  accounts.push({ ...account, id: "456", username: "second_owner" });
+  posts = [
+    post("a", { text: "FIRST ACCOUNT" }),
+    post("b", { account_id: "456", text: "SECOND ACCOUNT" }),
+  ];
+  sessionStorage.setItem("threads_selected_account", "456");
+  await openApp();
+  nav("投稿管理");
+  expect(screen.getByText("SECOND ACCOUNT")).toBeTruthy();
+  expect(screen.queryByText("FIRST ACCOUNT")).toBeNull();
+  nav("アカウント設定");
+  fireEvent.click(screen.getByRole("button", { name: "このアカウントを操作" }));
+  await waitFor(() =>
+    expect(sessionStorage.getItem("threads_selected_account")).toBe("123"),
+  );
+  await waitFor(() =>
+    expect(
+      screen.getByRole("button", { name: "更新" }).hasAttribute("disabled"),
+    ).toBe(false),
+  );
+  nav("投稿管理");
+  expect(screen.getByText("FIRST ACCOUNT")).toBeTruthy();
+  expect(screen.queryByText("SECOND ACCOUNT")).toBeNull();
+  expect(writes()).toHaveLength(0);
+});
+it("shows a readonly MCP configuration without embedding the session credential", async () => {
+  await openApp();
+  nav("MCP・API連携");
+  expect(
+    screen.getByRole("heading", { name: "MCP・API連携", level: 1 }),
+  ).toBeTruthy();
+  expect(document.body.textContent).toContain("THREADS_HARNESS_READ_ONLY");
+  expect(document.body.textContent).not.toContain("fixture-key");
+  expect(
+    screen
+      .getByRole("link", { name: "この環境のOpenAPI仕様を開く ↗" })
+      .getAttribute("href"),
+  ).toBe("/openapi.json");
+  expect(writes()).toHaveLength(0);
 });

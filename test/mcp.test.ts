@@ -16,7 +16,7 @@ describe('Threads stdio MCP', () => {
     const client = new Client({ name: 'test', version: '1' });
     const [a, b] = InMemoryTransport.createLinkedPair();
     await server.connect(a); await client.connect(b);
-    expect((await client.listTools()).tools.map(t => t.name).sort()).toEqual(['threads_accounts', 'threads_health', 'threads_insights', 'threads_posts', 'threads_publishing_limits']);
+    expect((await client.listTools()).tools.map(t => t.name).sort()).toEqual(['threads_accounts', 'threads_get_post', 'threads_health', 'threads_insights', 'threads_overview', 'threads_posts', 'threads_publishing_limits']);
     await expect(createApi({ ...config, readOnly: true }, fetcher)('/posts', 'POST', {})).rejects.toThrow('Read-only');
     await client.close(); await server.close();
   });
@@ -49,4 +49,20 @@ describe('Threads stdio MCP', () => {
     await expect(createApi(config, fetcher)('/posts', 'POST', {})).rejects.toThrow('Check saved state');
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
+});
+
+it('defaults MCP to read-only and exposes the complete 16-tool surface only when explicitly writable',async()=>{
+  expect(readConfig({THREADS_HARNESS_API_URL:config.origin,THREADS_HARNESS_API_KEY:'fixture'}).readOnly).toBe(true);
+  expect(readConfig({THREADS_HARNESS_API_URL:config.origin,THREADS_HARNESS_API_KEY:'fixture',THREADS_HARNESS_READ_ONLY:'false'}).readOnly).toBe(false);
+  const {server}=createServer(config,async()=>Response.json({success:true,data:[]}));const client=new Client({name:'test',version:'1'});const [a,b]=InMemoryTransport.createLinkedPair();await server.connect(a);await client.connect(b);
+  expect((await client.listTools()).tools).toHaveLength(16);await client.close();await server.close();
+});
+it('checks the selected account before writes and returns pagination for list clients',async()=>{
+  const calls:any[]=[];let mismatch=true;
+  const fetcher=async(url:string,init:any)=>{calls.push({url,method:init.method,body:init.body&&JSON.parse(init.body)});return Response.json(url.includes('/posts?')?{success:true,data:[{id:'p'}],pagination:{nextCursor:'next',hasMore:true}}:{success:true,data:{id:'p',account_id:mismatch?'other':'123'}});};
+  const {server}=createServer(config,fetcher);const client=new Client({name:'test',version:'1'});const [a,b]=InMemoryTransport.createLinkedPair();await server.connect(a);await client.connect(b);
+  const args={accountId:'123',postId:'p',confirmed:true};expect((await client.callTool({name:'threads_queue',arguments:args})).isError).toBe(true);expect(calls.every(c=>c.method==='GET')).toBe(true);
+  mismatch=false;expect((await client.callTool({name:'threads_queue',arguments:args})).isError).not.toBe(true);expect(calls.at(-1)).toMatchObject({method:'POST',body:{accountId:'123'}});
+  const list=await client.callTool({name:'threads_posts',arguments:{accountId:'123',limit:2}}) as any;expect(JSON.parse(list.content[0].text).pagination.nextCursor).toBe('next');
+  await client.close();await server.close();
 });

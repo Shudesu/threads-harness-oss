@@ -11,6 +11,7 @@ const paths = {
     "M8 3v4m8-4v4M3 10h18M5 5h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2m3 10h3m-3 3h7",
   insights: "M4 20V10h4v10m4 0V4h4v16m4 0v-7h2v7M2 20h21",
   accounts: "M20 21v-2a7 7 0 0 0-14 0v2M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z",
+  integrations: "m8 7-5 5 5 5m8-10 5 5-5 5m-3-14-2 18",
   menu: "M4 6h16M4 12h16M4 18h16",
   close: "m6 6 12 12M6 18 18 6",
   logout: "M9 4H4v16h5m4-4 4-4-4-4m-5 4h14",

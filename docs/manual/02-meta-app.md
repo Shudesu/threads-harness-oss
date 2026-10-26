@@ -1,7 +1,7 @@
 # 02 Metaアプリとトークン発行
 
 1. [Meta for Developers](https://developers.facebook.com/apps/)でアプリを作成し、作成時に尋ねられたら **Access the Threads API** ユースケースを選択します。後から追加する場合も、このユースケースを選んで設定します。
-2. ユースケースのカスタマイズで `threads_basic`、`threads_content_publish`、`threads_manage_insights` を追加します。このalphaの新規接続・再確認は3権限を要求します。連投を使う場合は `threads_manage_replies` も追加します。公式の返信作成と返信枠取得の仕様に合わせた条件です。content_publishだけでの連投は実地確認していません。
+2. ユースケースのカスタマイズで `threads_basic`、`threads_content_publish`、`threads_manage_insights` を追加します。現行版の新規接続・再確認は3権限を要求します。連投を使う場合は `threads_manage_replies` も追加します。公式の返信作成と返信枠取得の仕様に合わせた条件です。content_publishだけでの連投は実地確認していません。
 3. App roles → Roles → Add Peopleから **Threads Tester** として使用するThreadsアカウントを招待します。
 4. 招待した本人がThreadsの「設定 → アカウント → ウェブサイトのアクセス許可（Website permissions）→ 招待」を開いて承認します。招待を送るだけでは完了しません。
 5. Use cases → Access the Threads API → Settingsの下部にある **User Token Generator** で対象アカウントを選び、Generateを押してThreadsログインのポップアップで承認します。画面配置が異なる場合は公式ガイドに従います。

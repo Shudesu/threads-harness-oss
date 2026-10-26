@@ -102,6 +102,10 @@ try {
   const overview = (await overviewResponse.json()).data;
   assert.equal(overview.total,4); assert.equal(overview.drafts,3); assert.equal(overview.queued,1);
   assert.equal(overview.published,0); assert.equal(overview.views,null);
+  const firstPage = await (await request('/posts?accountId=456&limit=2')).json();
+  const secondPage = await (await request('/posts?accountId=456&limit=2&cursor='+encodeURIComponent(firstPage.pagination.nextCursor))).json();
+  assert.equal(new Set([...firstPage.data,...secondPage.data].map(p=>p.id)).size,4);
+  assert.equal(secondPage.pagination.nextCursor,null);
   console.log(JSON.stringify({ connectionStatus: connected.status, accounts: 1, draftStatus: draft.status, drafts: 1, mediaDrafts, mediaQueueAndCancel: mediaDrafts, overview: true, durableObjectQueueStatus: queued.status, preservedErrorKind: denied.kind, outboundReadOnlyChecks: outboundCalls, publications: 0 }));
 } finally {
   await mf.dispose();

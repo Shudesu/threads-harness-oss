@@ -1,6 +1,12 @@
 import { validMedia, type MediaItem } from "../shared/media.mjs";
 export type Page =
-  "dashboard" | "posts" | "compose" | "schedule" | "insights" | "accounts";
+  | "dashboard"
+  | "posts"
+  | "compose"
+  | "schedule"
+  | "insights"
+  | "accounts"
+  | "integrations";
 export type Filter = "all" | "draft" | "queued" | "published" | "review";
 export const pages: Record<Page, { title: string; description: string }> = {
   dashboard: {
@@ -22,6 +28,10 @@ export const pages: Record<Page, { title: string; description: string }> = {
   insights: {
     title: "インサイト",
     description: "公開した投稿の反応を確認できます。",
+  },
+  integrations: {
+    title: "MCP・API連携",
+    description: "AIエージェントと外部ツールから、この環境を操作できます。",
   },
   accounts: {
     title: "アカウント設定",

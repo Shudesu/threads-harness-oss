@@ -1189,3 +1189,59 @@ body:has(dialog[open]) {
 dialog {
   overscroll-behavior: contain;
 }
+
+.account-directory {
+  margin-bottom: 24px;
+}
+.account-directory-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.account-directory-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  border: 1px solid #e4e7ec;
+  padding: 16px;
+  border-radius: 8px;
+}
+.account-directory-row > div {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.account-directory-row p {
+  width: 100%;
+  overflow-wrap: anywhere;
+}
+.selected-account {
+  border-color: #667085;
+  background: #f9fafb;
+}
+.integration-code {
+  background: #f9fafb;
+  border: 1px solid #e4e7ec;
+  border-radius: 8px;
+  padding: 16px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.integration-accounts {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0;
+  list-style: none;
+}
+.integration-accounts li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
