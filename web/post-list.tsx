@@ -46,7 +46,12 @@ export function PostList({
             ["draft", "published"].includes(p.status),
           );
         return (
-          <article key={group.id} className="post-card">
+          <article
+            key={group.id}
+            id={`post-group-${group.id}`}
+            tabIndex={-1}
+            className="post-card"
+          >
             <header className="row-between">
               <div className="post-meta">
                 <Status

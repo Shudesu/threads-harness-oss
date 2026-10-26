@@ -102,6 +102,8 @@ try {
   const overview = (await overviewResponse.json()).data;
   assert.equal(overview.total,4); assert.equal(overview.drafts,3); assert.equal(overview.queued,1);
   assert.equal(overview.published,0); assert.equal(overview.views,null);
+  assert.equal(overview.processing,0); assert.equal(overview.lastPublishedAt,null);
+  assert.ok(Date.parse(overview.nextScheduledAt)>Date.now());
   const firstPage = await (await request('/posts?accountId=456&limit=2')).json();
   const secondPage = await (await request('/posts?accountId=456&limit=2&cursor='+encodeURIComponent(firstPage.pagination.nextCursor))).json();
   assert.equal(new Set([...firstPage.data,...secondPage.data].map(p=>p.id)).size,4);
