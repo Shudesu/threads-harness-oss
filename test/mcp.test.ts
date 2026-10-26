@@ -16,7 +16,7 @@ describe('Threads stdio MCP', () => {
     const client = new Client({ name: 'test', version: '1' });
     const [a, b] = InMemoryTransport.createLinkedPair();
     await server.connect(a); await client.connect(b);
-    expect((await client.listTools()).tools.map(t => t.name).sort()).toEqual(['threads_accounts', 'threads_health', 'threads_insights', 'threads_posts']);
+    expect((await client.listTools()).tools.map(t => t.name).sort()).toEqual(['threads_accounts', 'threads_health', 'threads_insights', 'threads_posts', 'threads_publishing_limits']);
     await expect(createApi({ ...config, readOnly: true }, fetcher)('/posts', 'POST', {})).rejects.toThrow('Read-only');
     await client.close(); await server.close();
   });

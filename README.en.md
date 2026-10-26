@@ -11,3 +11,5 @@ Connection verifies profile, permissions and actual expiry through `/debug_token
 Use Node 22, `npm ci`, `npm run check`, and `python3 -m unittest discover -s test -p 'test_*.py'`. Local development uses `.dev.vars.example`. Production requires your own D1 ID, migrations, `API_KEY` and a base64-encoded 32-byte `TOKEN_ENCRYPTION_KEY`. Never regenerate an existing encryption key during an upgrade. SSO is optional. Inspect the target account, back up D1, build and dry-run before deployment.
 
 [Japanese setup and operating manual](docs/manual/README.md) · [Security](SECURITY.md) · [Upgrade](docs/manual/10-upgrade.md)
+
+Version 0.1.2 keeps unattempted jobs queued when a token becomes invalid; reconnect and explicitly resume after reviewing overdue drafts. Quotas are checked when booking and executing; future capacity is not guaranteed. Reply quota checks require threads_manage_replies. Emoji clusters count as UTF-8 bytes toward the 500-unit budget. Apply migration 0006 before deploying this version.

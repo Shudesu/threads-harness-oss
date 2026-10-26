@@ -1,5 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { validThreadsText } from '../shared/text.mjs';
 
 export function readConfig(env = process.env) {
   const key = env.THREADS_HARNESS_API_KEY?.trim();
@@ -23,9 +24,9 @@ export function createApi(config, request = fetch) {
 }
 export function createServer(config, request = fetch) {
   const api = createApi(config, request);
-  const server = new McpServer({ name: 'threads-harness', version: '0.1.1' });
+  const server = new McpServer({ name: 'threads-harness', version: '0.1.2' });
   const id = z.string().min(1).max(128);
-  const text = z.string().min(1).refine(s => s.trim().length > 0 && [...s].length <= 500, 'Text must contain 1–500 characters.');
+  const text = z.string().min(1).refine(s => validThreadsText(s), 'Text must fit 500 units; emoji clusters count as UTF-8 bytes.');
   const register = (name, description, schema, readOnly, action) => {
     if (config.readOnly && !readOnly) return;
     server.registerTool(name, { description, inputSchema: schema, annotations: { readOnlyHint: readOnly, destructiveHint: false, idempotentHint: readOnly, openWorldHint: !readOnly } }, async args => {
@@ -42,6 +43,8 @@ export function createServer(config, request = fetch) {
   register('threads_queue', 'Publish or schedule a saved draft/chain. Obtain explicit user approval for the exact content, account and time before setting confirmed=true. Never retry an uncertain result.', { postId: id, scheduledAt: z.iso.datetime({ offset: true }).optional(), confirmed: z.literal(true) }, false, a => api(`/posts/${encodeURIComponent(a.postId)}/queue`, 'POST', a.scheduledAt ? { scheduledAt: a.scheduledAt } : {}));
   register('threads_cancel', 'Cancel queued work before processing starts.', { postId: id }, false, a => api(`/posts/${encodeURIComponent(a.postId)}/cancel`, 'POST', {}));
   register('threads_fetch_insights', 'Fetch Meta insights and update saved metrics for a published post.', { postId: id }, false, a => api(`/posts/${encodeURIComponent(a.postId)}/insights`, 'POST', {}));
+  register('threads_resume_queue', 'Resume queued work after reconnecting. Obtain explicit approval for all retained pending posts; this can publish overdue drafts immediately.', { accountId: id, confirmed: z.literal(true) }, false, a => api(`/accounts/${encodeURIComponent(a.accountId)}/resume`, 'POST', { confirmed: true }));
+  register('threads_publishing_limits', 'Read live Meta publishing/reply quotas. Reply quota requires threads_manage_replies.', { accountId: id, includeReplies: z.boolean().optional() }, true, a => api(`/accounts/${encodeURIComponent(a.accountId)}/limits${a.includeReplies ? '?replies=1' : ''}`));
   register('threads_check_connection', 'Recheck saved token permissions/expiry through Meta and save health. Does not publish.', { accountId: id }, false, a => api(`/accounts/${encodeURIComponent(a.accountId)}/check`, 'POST', {}));
   return { server, verify: () => api('/accounts') };
 }

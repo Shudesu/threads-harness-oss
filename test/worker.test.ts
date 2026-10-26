@@ -21,6 +21,11 @@ beforeEach(async () => {
   sqlite.exec(readFileSync(new URL('../migrations/0003_chains_insights.sql', import.meta.url), 'utf8'));
   sqlite.exec(readFileSync(new URL('../migrations/0004_connection_health.sql', import.meta.url), 'utf8'));
   sqlite.exec(readFileSync(new URL('../migrations/0005_account_schedulers.sql', import.meta.url), 'utf8'));
+  sqlite.exec(readFileSync(new URL('../migrations/0006_publication_safety.sql', import.meta.url), 'utf8'));
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (String(url).includes('/threads_publishing_limit')) return Response.json({ data: [{ quota_usage: 0, config: { quota_total: 250, quota_duration: 86400 }, reply_quota_usage: 0, reply_config: { quota_total: 1000, quota_duration: 86400 } }] });
+    throw new Error('Unexpected external request in test');
+  }));
   const adapt = (sql: string, args: unknown[] = []): any => ({
     sql, args,
     bind: (...values: unknown[]) => adapt(sql, values),
@@ -92,7 +97,7 @@ describe('authenticated tenant drafts', () => {
 describe('publication idempotency', () => {
   it('claims each stage atomically and keeps the container id', async () => {
     sqlite.prepare("UPDATE threads_posts SET status='queued'").run();
-    const client = { create: vi.fn(async () => 'container'), status: vi.fn(async () => 'FINISHED'), publish: vi.fn(async () => 'published') };
+    const client = { publishingLimits: async () => ({ posts: { remaining: 250 }, replies: { remaining: 1000 } }), create: vi.fn(async () => 'container'), status: vi.fn(async () => ({ status: 'FINISHED', error_message: null })), publish: vi.fn(async () => 'published') };
     const same = row();
     await Promise.all([processPost(env, same, () => client as any), processPost(env, same, () => client as any)]);
     expect(client.create).toHaveBeenCalledTimes(1);
@@ -104,7 +109,7 @@ describe('publication idempotency', () => {
   });
   it('quarantines an ambiguous publication and never retries it on alarm', async () => {
     sqlite.prepare("UPDATE threads_posts SET status='processing', container_id='container'").run();
-    const client = { status: async () => 'FINISHED', publish: vi.fn(async () => { throw new Error('connection lost'); }) };
+    const client = { publishingLimits: async () => ({ posts: { remaining: 250 }, replies: { remaining: 1000 } }), status: async () => ({ status: 'FINISHED', error_message: null }), publish: vi.fn(async () => { throw new Error('connection lost'); }) };
     await processPost(env, row(), () => client as any);
     expect(row().status).toBe('needs_review');
     const storage = { setAlarm: vi.fn(), getAlarm: async () => null, deleteAlarm: vi.fn() };
@@ -114,7 +119,7 @@ describe('publication idempotency', () => {
   });
   it('waits for container readiness without publishing early', async () => {
     sqlite.prepare("UPDATE threads_posts SET status='processing', container_id='container'").run();
-    const client = { status: async () => 'IN_PROGRESS', publish: vi.fn() };
+    const client = { publishingLimits: async () => ({ posts: { remaining: 250 }, replies: { remaining: 1000 } }), status: async () => ({ status: 'IN_PROGRESS', error_message: null }), publish: vi.fn() };
     await processPost(env, row(), () => client as any);
     expect(row().status).toBe('processing');
     expect(client.publish).not.toHaveBeenCalled();
@@ -145,7 +150,7 @@ describe('VPS chain workflow', () => {
   it('waits for the parent, replies to its published id, and stops after ambiguous failure', async () => {
     const { ids } = (await (await request('/chains', 'POST', { accountId: '123', parts: ['hook', 'body', 'end'] })).json() as any).data;
     await request(`/posts/${ids[0]}/queue`, 'POST', {});
-    const client = { create: vi.fn(async () => 'container'), status: async () => 'FINISHED', publish: vi.fn(async () => 'parent-published') };
+    const client = { publishingLimits: async () => ({ posts: { remaining: 250 }, replies: { remaining: 1000 } }), create: vi.fn(async () => 'container'), status: async () => ({ status: 'FINISHED', error_message: null }), publish: vi.fn(async () => 'parent-published') };
     await processPost(env, row(ids[1]), () => client as any);
     expect(client.create).not.toHaveBeenCalled();
     await processPost(env, row(ids[0]), () => client as any);
@@ -166,7 +171,7 @@ describe('VPS chain workflow', () => {
   it('keeps missing insights unknown and passes reply id through official API', async () => {
     const fetcher = vi.fn(async () => Response.json({ data: [{ name: 'likes', values: [{ value: 7 }] }, { name: 'views', values: [{ value: 'unknown' }] }] }));
     const api = new ThreadsApi('token', fetcher as any);
-    expect(await api.insights('123')).toEqual({ views: null, likes: 7, replies: null, reposts: null, quotes: null });
+    expect(await api.insights('123')).toEqual({ views: null, likes: 7, replies: null, reposts: null, quotes: null, shares: null });
     fetcher.mockResolvedValueOnce(Response.json({ id: 'container' }));
     await api.create('123', 'body', 'parent');
     expect(String(fetcher.mock.calls[1][1].body)).toContain('reply_to_id=parent');
@@ -178,6 +183,7 @@ afterEach(() => { vi.unstubAllGlobals(); sqlite.close(); });
 const allScopes = ['threads_basic', 'threads_content_publish', 'threads_manage_insights'];
 function mockConnection(overrides: Record<string, unknown> = {}) {
   const fetcher = vi.fn(async (url: string) => {
+    if (url.includes('/threads_publishing_limit')) return Response.json({ data: [{ quota_usage: 0, config: { quota_total: 250, quota_duration: 86400 } }] });
     if (url.includes('/me?')) return Response.json({ id: '123', username: 'owner' });
     if (url.includes('/debug_token?')) return Response.json({ data: { type: 'USER', user_id: '123', is_valid: true, scopes: allScopes, expires_at: Math.floor(Date.now() / 1000) + 3600, ...overrides } });
     throw new Error('unexpected request');
@@ -195,7 +201,7 @@ describe('account connection and token health', () => {
     expect(Date.parse(account.token_expires_at) - Date.now()).toBeLessThanOrEqual(3600000);
     expect(account.permissions_checked_at).toBeTruthy();
     expect(row().text).toBe('Hello');
-    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher).toHaveBeenCalledTimes(3);
     expect(fetcher.mock.calls[1][0]).toContain('debug_token?input_token=replacement-token');
     const output = await (await request('/accounts')).text();
     expect(output).not.toContain('replacement-token');
@@ -256,7 +262,7 @@ describe('account connection and token health', () => {
     expect(account.last_error_code).toBe('token_inspection_failed');
   });
   it('blocks reservations beyond known expiry and stops expired queued work without external posting', async () => {
-    const client = { create: vi.fn() };
+    const client = { publishingLimits: async () => ({ posts: { remaining: 250 }, replies: { remaining: 1000 } }), create: vi.fn() };
     const expires = new Date(Date.now() + 3600000).toISOString();
     sqlite.prepare('UPDATE threads_accounts SET token_expires_at=?').run(expires);
     expect((await request('/posts/draft/queue', 'POST', { scheduledAt: new Date(Date.now() + 7200000).toISOString() })).status).toBe(409);
@@ -265,23 +271,23 @@ describe('account connection and token health', () => {
     sqlite.prepare("UPDATE threads_posts SET status='queued'").run();
     await processPost(env, row(), () => client as any);
     expect(client.create).not.toHaveBeenCalled();
-    expect(row().error_code).toBe('token_expired');
-    expect(row().status).toBe('failed');
+    expect(row().status).toBe('queued');
+    expect((await (await request('/accounts')).json() as any).data[0].last_error_code).toBe('token_expired');
   });
   it('preserves Meta codes on publication failure and never retries', async () => {
     sqlite.prepare("UPDATE threads_posts SET status='queued'").run();
-    const client = { create: vi.fn(async () => { throw new ThreadsError('threads_meta_190_463', 'expired', 422, 190, 463); }) };
+    const client = { publishingLimits: async () => ({ posts: { remaining: 250 }, replies: { remaining: 1000 } }), create: vi.fn(async () => { throw new ThreadsError('threads_meta_190_463', 'expired', 422, 190, 463); }) };
     await processPost(env, row(), () => client as any);
     await processPost(env, row(), () => client as any);
     expect(client.create).toHaveBeenCalledTimes(1);
-    expect(row().status).toBe('needs_review');
+    expect(row().status).toBe('queued');
     expect(row().error_code).toBe('threads_meta_190_463');
     expect((await (await request('/accounts')).json() as any).data[0].status).toBe('reauth_required');
   });
   it('does not let an old in-flight failure invalidate a reconnected token', async () => {
     sqlite.prepare("UPDATE threads_posts SET status='queued'").run();
     const replacement = await seal('new-token', secret);
-    const client = { create: async () => {
+    const client = { publishingLimits: async () => ({ posts: { remaining: 250 }, replies: { remaining: 1000 } }), create: async () => {
       sqlite.prepare("UPDATE threads_accounts SET token_cipher=?, status='connected'").run(replacement);
       throw new ThreadsError('threads_meta_190', 'expired', 422, 190);
     } };
@@ -362,4 +368,122 @@ it('cannot lose a queue request arriving while the idle alarm is shutting down',
   const queued = publisher.fetch(new Request('https://publisher/queue', { method: 'POST', body: JSON.stringify({ id: 'draft', scheduledAt: new Date().toISOString() }) }));
   release(); await Promise.all([idle, queued]);
   expect(row().status).toBe('queued'); expect(alarmAt).not.toBeNull();
+});
+
+const generousLimits = () => ({ posts: { remaining: 250 }, replies: { remaining: 1000 } });
+function quotaResponse(postsUsed = 0, repliesUsed = 0) {
+  return Response.json({ data: [{ quota_usage: postsUsed, config: { quota_total: 250, quota_duration: 86400 }, reply_quota_usage: repliesUsed, reply_config: { quota_total: 1000, quota_duration: 86400 } }] });
+}
+describe('retained reservations after token failure', () => {
+  it('pauses after the first rejected create, keeps every due job queued and sleeps', async () => {
+    sqlite.prepare("UPDATE threads_posts SET status='queued',scheduled_at='2000-01-01T00:00:00Z'").run();
+    for (let i = 0; i < 6; i++) sqlite.prepare("INSERT INTO threads_posts(id,account_id,text,status,scheduled_at,created_at,updated_at) VALUES (?,'123','held','queued','2000-01-01T00:00:00Z','2000','2000')").run(`held-${i}`);
+    let creates = 0;
+    const fetcher = vi.fn(async (url: string) => {
+      if (url.includes('/threads_publishing_limit')) return quotaResponse();
+      creates++; return Response.json({ error: { code: 190, error_subcode: 463, message: 'never expose this token' } }, { status: 400 });
+    });
+    vi.stubGlobal('fetch', fetcher);
+    const state = schedulerState(); const publisher = new ThreadsPublisher(state as any, env);
+    await publisher.alarm(); await publisher.alarm();
+    expect(creates).toBe(1);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM threads_posts WHERE status='queued'").get()).toMatchObject({ n: 7 });
+    expect(sqlite.prepare('SELECT status,queue_paused,last_error_kind FROM threads_accounts').get()).toMatchObject({ status: 'reauth_required', queue_paused: 1, last_error_kind: 'token_invalid' });
+    expect(state.storage.deleteAlarm).toHaveBeenCalled();
+    mockConnection();
+    expect((await request('/accounts', 'POST', { accessToken: 'new-token' })).status).toBe(201);
+    expect(sqlite.prepare('SELECT queue_paused FROM threads_accounts').get()).toMatchObject({ queue_paused: 1 });
+    expect((await request('/accounts/123/resume', 'POST', {})).status).toBe(400);
+    expect((await request('/accounts/123/resume', 'POST', { confirmed: true })).status).toBe(200);
+    expect(sqlite.prepare('SELECT queue_paused FROM threads_accounts').get()).toMatchObject({ queue_paused: 0 });
+    expect((await (await request('/accounts')).json() as any).data[0].pending_count).toBe(7);
+    expect(creates).toBe(1);
+  });
+  it('retains a processing container after an invalid token on the read-only status check', async () => {
+    sqlite.prepare("UPDATE threads_posts SET status='processing',container_id='container'").run();
+    const publish = vi.fn();
+    const client = { publishingLimits: async () => generousLimits(), status: async () => { throw new ThreadsError('threads_meta_190', 'invalid', 422, 190); }, publish };
+    await processPost(env, row(), () => client as any);
+    expect(row()).toMatchObject({ status: 'processing', container_id: 'container', error_kind: 'token_invalid' });
+    expect(publish).not.toHaveBeenCalled();
+  });
+});
+describe('publishing quotas', () => {
+  it('rejects immediate queueing when exhausted without changing the draft', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => quotaResponse(250)));
+    const response = await request('/posts/draft/queue', 'POST', {});
+    expect(response.status).toBe(409);
+    expect((await response.json() as any).kind).toBe('rate_limited');
+    expect(row().status).toBe('draft');
+  });
+  it('checks reply capacity for the complete chain before mutating any part', async () => {
+    const { ids } = (await (await request('/chains', 'POST', { accountId: '123', parts: ['root', 'reply'] })).json() as any).data;
+    const fetcher = vi.fn(async () => quotaResponse(0, 1000)); vi.stubGlobal('fetch', fetcher);
+    expect((await request(`/posts/${ids[0]}/queue`, 'POST', {})).status).toBe(409);
+    expect(ids.map((id: string) => row(id).status)).toEqual(['draft', 'draft']);
+    expect(fetcher.mock.calls[0][0]).toContain('reply_quota_usage');
+  });
+  it('does not promise future capacity, and waits before any mutation when execution quota is exhausted', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => quotaResponse(250)));
+    const response = await request('/posts/draft/queue', 'POST', { scheduledAt: new Date(Date.now() + 3600000).toISOString() });
+    expect(response.status).toBe(200);
+    expect((await response.json() as any).data.warning).toContain('保証されません');
+    const create = vi.fn();
+    await processPost(env, row(), () => ({ publishingLimits: async () => ({ posts: { remaining: 0 } }), create }) as any);
+    expect(row()).toMatchObject({ status: 'queued', error_code: 'quota_exhausted' });
+    expect(Date.parse(row().next_attempt_at)).toBeGreaterThan(Date.now());
+    expect(create).not.toHaveBeenCalled();
+  });
+  it('serializes competing bookings so they cannot both reserve the last local slot', async () => {
+    sqlite.prepare("INSERT INTO threads_posts(id,account_id,text,created_at,updated_at) VALUES ('second','123','second','2000','2000')").run();
+    vi.stubGlobal('fetch', vi.fn(async () => quotaResponse(249)));
+    const state = schedulerState(); let queue: Promise<unknown> = Promise.resolve();
+    state.blockConcurrencyWhile = (fn: () => Promise<unknown>) => { const current = queue.then(fn); queue = current.catch(() => {}); return current; };
+    const publisher = new ThreadsPublisher(state as any, env);
+    const responses = await Promise.all(['draft', 'second'].map(id => publisher.fetch(new Request('https://publisher/queue', { method: 'POST', body: JSON.stringify({ id, scheduledAt: new Date().toISOString() }) }))));
+    expect(responses.map(r => r.status).sort()).toEqual([200, 409]);
+    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM threads_posts WHERE status='queued'").get()).toMatchObject({ n: 1 });
+  });
+});
+describe('container outcomes and bounded read polling', () => {
+  it.each([['ERROR', 'container_error_failed_processing_video', 'failed'], ['EXPIRED', 'container_expired', 'failed'], ['PUBLISHED', 'container_already_published', 'needs_review']])('classifies %s without publishing', async (status, code, outcome) => {
+    sqlite.prepare("UPDATE threads_posts SET status='processing',container_id='container'").run();
+    const publish = vi.fn();
+    await processPost(env, row(), () => ({ publishingLimits: async () => generousLimits(), status: async () => ({ status, error_message: status === 'ERROR' ? 'FAILED_PROCESSING_VIDEO' : null }), publish }) as any);
+    expect(row()).toMatchObject({ status: outcome, error_code: code, error_kind: 'container_error' });
+    expect(publish).not.toHaveBeenCalled();
+  });
+  it('polls a status 404 at most five times, preserving the same container and never recreating it', async () => {
+    sqlite.prepare("UPDATE threads_posts SET status='processing',container_id='container'").run();
+    const status = vi.fn(async () => { throw new ThreadsError('threads_http_404', 'not visible', 502, undefined, undefined, 404); });
+    const create = vi.fn(), publish = vi.fn();
+    const client = { publishingLimits: async () => generousLimits(), status, create, publish };
+    for (let i = 0; i < 6; i++) await processPost(env, row(), () => client as any);
+    expect(status).toHaveBeenCalledTimes(5);
+    expect(row()).toMatchObject({ status: 'needs_review', container_id: 'container', error_code: 'container_status_timeout', status_check_count: 5 });
+    expect(create).not.toHaveBeenCalled(); expect(publish).not.toHaveBeenCalled();
+  });
+  it('keeps uncertain publish code 24/4279009 quarantined rather than assuming a safe retry', async () => {
+    sqlite.prepare("UPDATE threads_posts SET status='processing',container_id='container'").run();
+    const publish = vi.fn(async () => { throw new ThreadsError('threads_meta_24_4279009', 'not visible', 502, 24, 4279009, 400); });
+    const client = { publishingLimits: async () => generousLimits(), status: async () => ({ status: 'FINISHED' }), publish };
+    await processPost(env, row(), () => client as any); await processPost(env, row(), () => client as any);
+    expect(row().status).toBe('needs_review'); expect(publish).toHaveBeenCalledTimes(1);
+  });
+  it('drops unknown upstream container text and preserves only documented enum values', async () => {
+    const api = new ThreadsApi('token', vi.fn(async () => Response.json({ status: 'ERROR', error_message: 'secret-token' })));
+    expect(await api.status('container')).toEqual({ status: 'ERROR', error_message: null });
+  });
+});
+it('stores shares separately, preserves missing metrics as null, and returns their measured count', async () => {
+  sqlite.prepare("UPDATE threads_posts SET status='published',published_id='pub'").run();
+  vi.stubGlobal('fetch', vi.fn(async () => Response.json({ data: [{ name: 'shares', values: [{ value: 0 }] }, { name: 'likes', values: [{ value: 7 }] }] })));
+  expect((await request('/posts/draft/insights', 'POST')).status).toBe(200);
+  expect(row()).toMatchObject({ shares: 0, likes: 7, views: null });
+  expect((await (await request('/insights?accountId=123')).json() as any).data).toMatchObject({ shares: 0, shares_measured: 1 });
+});
+it('enforces the shared emoji limit at the draft API boundary', async () => {
+  expect((await request('/posts', 'POST', { accountId: '123', text: '😀'.repeat(126) })).status).toBe(400);
+  expect((await request('/posts', 'POST', { accountId: '123', text: '😀'.repeat(125) })).status).toBe(201);
 });
