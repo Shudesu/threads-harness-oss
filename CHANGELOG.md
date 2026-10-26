@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.1 — 2026-10-26
+## 0.2.1 — 2026-10-27
 
 - Simplify the dashboard around the selected account and one context-aware next action. Prioritize connection/expiry problems, uncertain publications, paused reservations and unsaved drafts.
 - Use three clear status totals, compact recent activity, saved reaction metrics and explicit scheduling/connection details. Keep the availability notice secondary. No invented trend charts or live-metric claims.
