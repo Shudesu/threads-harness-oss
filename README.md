@@ -1,4 +1,4 @@
-# Threads Harness (OSS alpha)
+# Threads Harness (OSS)
 
 Meta Threadsの下書き・連投・予約投稿・インサイトを扱う、Cloudflare Worker + D1 + Durable Objects + React/Kumoの管理画面。MITライセンス。
 
@@ -32,3 +32,13 @@ python3 -m unittest discover -s test -p 'test_*.py'
 `npm run build:wfp-bundle` はWorker・アセット・新規DB用schema・DO定義を `dist-worker/wfp-bundle` に出力します。既存DBにschemaを再実行しないでください。秘密・所有者管理・ルーティング・既存テナントのmigrationはcontrol plane側の責任です。
 
 画像・動画1件、画像/動画混在のカルーセル2〜20件を公開HTTPS URLで保存・予約できます。端末からのアップロードは未対応です。[操作・素材仕様](docs/manual/06-operations.md)。
+
+## 正式提供開始（2026-10-26）
+
+複数アカウント、テキスト・連投・画像・動画・カルーセル、予約、インサイト、専用MCP/APIを提供しています。接続はMetaユーザートークン方式です。未対応の機能は上記の制限を確認してください。
+
+- [複数アカウントの接続・切替](docs/manual/05-connect.md)
+- [専用MCP・16ツール・読み取り専用モード](docs/mcp.md)
+- [REST APIリファレンス](docs/api.md) / [OpenAPI 3.1](openapi.json)
+
+APIキーは環境内の全アカウントの管理権限です。別のお客様は別環境で運用してください。MCPやaccountId指定によるアカウント選択を、権限の分離と混同しないでください。

@@ -759,3 +759,63 @@ it('summarizes the complete selected account without hiding overflow or inventin
   const empty=await (await request('/overview?accountId=other')).json() as any;
   expect(empty.data).toMatchObject({total:0,drafts:0,published:0,measured:0,views:null,likes:null});
 });
+
+it('requires the expected account to match before any post mutation or Meta call',async()=>{
+  sqlite.prepare('INSERT INTO threads_accounts(id,username,created_at,updated_at) VALUES(?,?,?,?)').run('456','second','2026-10-26','2026-10-26');
+  const before=JSON.stringify(row());
+  const fetcher=vi.mocked(fetch);fetcher.mockClear();
+  for(const [suffix,method,extra] of [['','PATCH',{text:'wrong account'}],['/queue','POST',{}],['/cancel','POST',{}],['/archive','POST',{}],['/insights','POST',{}]] as const){
+    const res=await request('/posts/draft'+suffix,method,{accountId:'456',...extra});expect(res.status).toBe(409);expect((await res.json() as any).code).toBe('account_mismatch');
+  }
+  expect(JSON.stringify(row())).toBe(before);expect(fetcher).not.toHaveBeenCalled();
+  expect((await request('/posts/draft?accountId=456')).status).toBe(404);
+  expect((await request('/posts/draft?accountId=123')).status).toBe(200);
+  expect((await request('/posts/draft','PATCH',{accountId:'123',text:'correct account'})).status).toBe(200);
+  expect(row().text).toBe('correct account');
+});
+it('pages tied timestamps without duplicate IDs, leaks or skipping records when a new post is inserted',async()=>{
+  sqlite.prepare('INSERT INTO threads_accounts(id,username,created_at,updated_at) VALUES(?,?,?,?)').run('456','second','2026-10-26','2026-10-26');
+  const insert=sqlite.prepare('INSERT INTO threads_posts(id,account_id,text,created_at,updated_at) VALUES(?,?,?,?,?)');
+  for(const id of ['aaa','bbb','ccc','ddd'])insert.run(id,'123','caption','2026-10-26T00:00:00Z','2026-10-26T00:00:00Z');
+  insert.run('zzz-other','456','other','2026-10-27','2026-10-27');
+  const first=await (await request('/posts?accountId=123&limit=2')).json() as any;
+  expect(first.data.map((p:any)=>p.id)).toEqual(['ddd','ccc']);expect(first.pagination.hasMore).toBe(true);
+  insert.run('new','123','new','2026-10-28','2026-10-28');
+  const second=await (await request('/posts?accountId=123&limit=2&cursor='+encodeURIComponent(first.pagination.nextCursor))).json() as any;
+  expect(second.data.map((p:any)=>p.id)).toEqual(['bbb','aaa']);
+  const third=await (await request('/posts?accountId=123&limit=2&cursor='+encodeURIComponent(second.pagination.nextCursor))).json() as any;
+  expect(third.data.map((p:any)=>p.id)).toEqual(['draft']);expect(third.pagination.nextCursor).toBeNull();
+  for(const q of ['limit=0','limit=201','limit=2.5','cursor=bad','status=made_up'])expect((await request('/posts?accountId=123&'+q)).status).toBe(400);
+});
+it('keeps account B publishable when an invalid token pauses account A',async()=>{
+  sqlite.prepare('INSERT INTO threads_accounts(id,username,token_cipher,created_at,updated_at) VALUES(?,?,?,?,?)').run('456','second',await seal('second-token',secret),'2026-10-26','2026-10-26');
+  sqlite.prepare("UPDATE threads_posts SET status='queued' WHERE id='draft'").run();
+  sqlite.prepare("INSERT INTO threads_posts(id,account_id,text,status,created_at,updated_at) VALUES('second','456','second body','queued','2026-10-26','2026-10-26')").run();
+  const bad={publishingLimits:async()=>{throw new ThreadsError('threads_meta_190','invalid',422,190);},publish:vi.fn()};
+  const good={publishingLimits:async()=>({posts:{remaining:250}}),create:vi.fn(async()=> '222'),status:async()=>({status:'FINISHED'}),publish:vi.fn(async()=> '333')};
+  await processPost(env,row(),()=>bad as any);await processPost(env,row('second'),()=>good as any);await processPost(env,row('second'),()=>good as any);
+  expect(row().status).toBe('queued');expect(row('second').status).toBe('published');
+  expect((sqlite.prepare("SELECT queue_paused FROM threads_accounts WHERE id='123'").get() as any).queue_paused).toBe(1);
+  expect((sqlite.prepare("SELECT queue_paused FROM threads_accounts WHERE id='456'").get() as any).queue_paused).toBe(0);
+  expect(good.publish).toHaveBeenCalledWith('456','222');
+  expect(good.publish).toHaveBeenCalledTimes(1);expect(bad.publish).not.toHaveBeenCalled();
+});
+it('serves a secret-free OpenAPI document covering every public REST route',async()=>{
+  const response=await app.request('https://test/openapi.json',{},env);expect(response.status).toBe(200);
+  const spec=await response.json() as any;expect(spec.openapi).toBe('3.1.0');expect(spec.info.version).toBe('0.2.0');
+  const ids:string[]=[];
+  for(const route of app.routes.filter(r=>r.method!=='ALL' && (r.path.startsWith('/api/') || ['/health','/openapi.json'].includes(r.path)))){
+    const path=route.path.replace(/:([^/]+)/g,'{$1}');const operation=spec.paths[path]?.[route.method.toLowerCase()];expect(operation,path+' '+route.method).toBeTruthy();ids.push(operation.operationId);
+  }
+  expect(new Set(ids).size).toBe(ids.length);expect(JSON.stringify(spec)).not.toContain('private-token');expect(JSON.stringify(spec)).not.toContain('workspace-key');
+  expect(spec.components.securitySchemes.WorkspaceKey.scheme).toBe('bearer');
+});
+
+it('does not treat malformed expected-account JSON as a legacy unscoped mutation',async()=>{
+  const before=JSON.stringify(row());
+  for(const raw of ['{broken','null','[]']){
+    const res=await app.request('https://test/api/posts/draft/archive',{method:'POST',headers:{Authorization:'Bearer workspace-key','Content-Type':'application/json'},body:raw},env);
+    expect(res.status).toBe(400);expect((await res.json() as any).code).toBe('invalid_request');
+  }
+  expect(JSON.stringify(row())).toBe(before);
+});

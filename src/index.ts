@@ -1,5 +1,6 @@
 import { validDraftContent, type MediaItem } from '../shared/media.mjs';
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
+import openapi from '../openapi.json';
 import { ThreadsApi, ThreadsError, validateEncryptionKey, seal, unseal } from './threads';
 import { adminSso } from './admin-sso';
 
@@ -41,7 +42,8 @@ async function recordAccountFailure(env: Bindings, id: string, cipher: string, e
   await env.DB.prepare("UPDATE threads_accounts SET last_error_code=?, last_error_kind=?, queue_paused=CASE WHEN ? THEN 1 ELSE queue_paused END, status=CASE WHEN ? THEN 'reauth_required' ELSE status END, updated_at=? WHERE id=? AND token_cipher=?")
     .bind(error.code, error.kind, Number(invalid), Number(invalid), now(), id, cipher).run();
 }
-app.get('/health', c => c.json({ status: 'ok', product: 'threads', version: '0.1.5' }));
+app.get('/health', c => c.json({ status: 'ok', product: 'threads', version: '0.2.0' }));
+app.get('/openapi.json', c => { c.header('Cache-Control', 'public, max-age=3600'); return c.json(openapi); });
 app.route('/', adminSso);
 app.use('/api/*', async (c, next) => {
   if (!c.env.API_KEY) return c.json(fail('Service not configured'), 503);
@@ -69,7 +71,7 @@ app.get('/api/health', async c => {
   return c.json(ok({ ready: encryptionKey && migrations, apiKey: Boolean(c.env.API_KEY), encryptionKey, sso: (c.env.ADMIN_SSO_SECRET?.length ?? 0) >= 32, migrations, accounts }));
 });
 app.get('/api/accounts', async c => {
-  const rows = (await c.env.DB.prepare("SELECT id, username, status, queue_paused, token_expires_at, data_access_expires_at, permissions_checked_at, last_error_code, last_error_kind, created_at, updated_at, (SELECT COUNT(*) FROM threads_posts p WHERE p.account_id=threads_accounts.id AND p.status IN ('queued','processing')) AS pending_count FROM threads_accounts ORDER BY created_at DESC").all<AccountHealth>()).results;
+  const rows = (await c.env.DB.prepare("SELECT id, username, status, queue_paused, token_expires_at, data_access_expires_at, permissions_checked_at, last_error_code, last_error_kind, created_at, updated_at, (SELECT COUNT(*) FROM threads_posts p WHERE p.account_id=threads_accounts.id AND p.status IN ('queued','creating','processing','publishing')) AS pending_count FROM threads_accounts ORDER BY created_at DESC").all<AccountHealth>()).results;
   return c.json(ok(rows.map(row => ({ ...row, status: row.status === 'connected' && expired(row) ? 'expired' : row.status }))));
 });
 app.post('/api/accounts', async c => {
@@ -128,8 +130,51 @@ app.post('/api/accounts/:id/disconnect', async c => {
 app.get('/api/posts', async c => {
   const account = c.req.query('accountId');
   if (!account) return c.json(fail('accountId required'), 400);
-  return c.json(ok((await c.env.DB.prepare("SELECT * FROM threads_posts WHERE account_id = ? AND status != 'archived' ORDER BY created_at DESC LIMIT 200").bind(account).all()).results));
+  const rawLimit = c.req.query('limit') ?? '200', limit = Number(rawLimit);
+  if (!/^\d+$/.test(rawLimit) || !Number.isInteger(limit) || limit < 1 || limit > 200) return c.json(fail('limitは1〜200です'), 400);
+  const status = c.req.query('status');
+  if (status && !['draft','queued','creating','processing','publishing','published','failed','needs_review'].includes(status)) return c.json(fail('statusが不正です'), 400);
+  const cursor = c.req.query('cursor');
+  let boundary: { createdAt: string; id: string } | undefined;
+  if (cursor) {
+    try {
+      if (cursor.length > 512) throw new Error();
+      const parsed = JSON.parse(atob(cursor.replace(/-/g, '+').replace(/_/g, '/')));
+      if (typeof parsed.createdAt !== 'string' || !/^\d{4}-\d{2}-\d{2}/.test(parsed.createdAt) || parsed.createdAt.length > 40 || typeof parsed.id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(parsed.id)) throw new Error();
+      boundary = parsed;
+    } catch { return c.json(fail('cursorが不正です'), 400); }
+  }
+  const bindings: (string | number)[] = [account];
+  let where = "account_id=? AND status!='archived'";
+  if (status) { where += ' AND status=?'; bindings.push(status); }
+  if (boundary) { where += ' AND (created_at<? OR (created_at=? AND id<?))'; bindings.push(boundary.createdAt, boundary.createdAt, boundary.id); }
+  const rows = (await c.env.DB.prepare(`SELECT * FROM threads_posts WHERE ${where} ORDER BY created_at DESC,id DESC LIMIT ?`).bind(...bindings, limit + 1).all<Post & { created_at: string }>()).results;
+  const data = rows.slice(0, limit), last = data[data.length - 1];
+  const nextCursor = rows.length > limit && last ? btoa(JSON.stringify({ createdAt: last.created_at, id: last.id })).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') : null;
+  return c.json({ ...ok(data), pagination: { limit, nextCursor, hasMore: Boolean(nextCursor) } });
 });
+app.get('/api/posts/:id', async c => {
+  const accountId = c.req.query('accountId');
+  if (!accountId) return c.json(fail('accountId required'), 400);
+  const post = await c.env.DB.prepare('SELECT * FROM threads_posts WHERE id=? AND account_id=?').bind(c.req.param('id'), accountId).first();
+  if (!post) return c.json(fail('このアカウントの原稿がありません'), 404);
+  return c.json(ok(post));
+});
+/** A wrong-target guard, not an authorization scope: the key still administers the workspace. */
+async function expectPostAccount(c: Context<{ Bindings: Bindings }>) {
+  let input: Record<string, unknown>;
+  if (c.req.raw.body === null || c.req.header('content-length') === '0') input = {};
+  else {
+    try { input = await c.req.json(); }
+    catch { throw new ThreadsError('invalid_request', '有効なJSONオブジェクトを指定してください。', 400); }
+    if (!input || typeof input !== 'object' || Array.isArray(input)) throw new ThreadsError('invalid_request', '有効なJSONオブジェクトを指定してください。', 400);
+  }
+  const expected = input.accountId;
+  if (expected === undefined) return; // Compatibility with existing REST clients.
+  if (typeof expected !== 'string' || !expected) throw new ThreadsError('invalid_account_id', 'accountIdを指定してください。', 400);
+  const post = await c.env.DB.prepare('SELECT account_id FROM threads_posts WHERE id=?').bind(c.req.param('id')).first<{ account_id: string }>();
+  if (!post || post.account_id !== expected) throw new ThreadsError('account_mismatch', '投稿先のアカウントが一致しません。原稿を確認してください。', 409);
+}
 app.get('/api/overview', async c => {
   const accountId = c.req.query('accountId');
   if (!accountId) return c.json(fail('accountId required'), 400);
@@ -172,6 +217,7 @@ app.post('/api/chains', async c => {
   return c.json(ok({ chainId, ids }), 201);
 });
 app.post('/api/posts/:id/insights', async c => {
+  await expectPostAccount(c);
   const post = await c.env.DB.prepare("SELECT p.published_id, a.id AS account_id, a.token_cipher FROM threads_posts p JOIN threads_accounts a ON p.account_id=a.id WHERE p.id=? AND p.published_id IS NOT NULL AND a.status='connected'").bind(c.req.param('id')).first<{ published_id: string; account_id: string; token_cipher: string }>();
   if (!post) return c.json(fail('接続中のアカウントの公開済み記事が必要です'), 409);
   let metrics: Record<string, number | null>;
@@ -188,6 +234,7 @@ app.get('/api/insights', async c => {
   return c.json(ok(data));
 });
 app.patch('/api/posts/:id', async c => {
+  await expectPostAccount(c);
   const input = await c.req.json();
   const current = await c.env.DB.prepare("SELECT text,media_json FROM threads_posts WHERE id=? AND status='draft'").bind(c.req.param('id')).first<{ text: string; media_json: string }>();
   if (!current) return c.json(fail('編集できる下書きがありません'), 409);
@@ -198,6 +245,7 @@ app.patch('/api/posts/:id', async c => {
   return c.json(ok({ updated: true }));
 });
 app.post('/api/posts/:id/archive', async c => {
+  await expectPostAccount(c);
   const target = await chainTarget(c.env.DB, c.req.param('id'));
   if (!target) return c.json(fail('連投の先頭から操作してください'), 409);
   const result = await c.env.DB.prepare(`UPDATE threads_posts SET status='archived', updated_at=? WHERE ${target.where} AND NOT EXISTS (SELECT 1 FROM threads_posts WHERE ${target.where} AND status NOT IN ('draft','published'))`).bind(now(), target.id, target.id).run();
@@ -205,6 +253,7 @@ app.post('/api/posts/:id/archive', async c => {
   return c.json(ok({ archived: true }));
 });
 app.post('/api/posts/:id/queue', async c => {
+  await expectPostAccount(c);
   const { scheduledAt } = await c.req.json();
   if (scheduledAt !== undefined && (typeof scheduledAt !== 'string' || !Number.isFinite(Date.parse(scheduledAt)))) return c.json(fail('予約日時が不正です'), 400);
   const scheduled = scheduledAt === undefined ? now() : new Date(scheduledAt).toISOString();
@@ -219,6 +268,7 @@ app.post('/api/posts/:id/queue', async c => {
   return publisher.fetch('https://publisher/queue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: c.req.param('id'), scheduledAt: scheduled }) });
 });
 app.post('/api/posts/:id/cancel', async c => {
+  await expectPostAccount(c);
   const target = await chainTarget(c.env.DB, c.req.param('id'));
   if (!target) return c.json(fail('連投の先頭から操作してください'), 409);
   const result = await c.env.DB.prepare(`UPDATE threads_posts SET status='draft', scheduled_at=NULL, next_attempt_at=NULL, error_code=NULL, error_kind=NULL, container_id=NULL, media_children_json='[]', status_check_count=0, updated_at=? WHERE ${target.where} AND NOT EXISTS (SELECT 1 FROM threads_posts WHERE ${target.where} AND status != 'queued')`).bind(now(), target.id, target.id).run();
@@ -234,7 +284,7 @@ async function chainTarget(db: D1Database, id: string) {
   return { where: post.chain_id ? 'chain_id=?' : 'id=?', id: post.chain_id || post.id };
 }
 
-/** One scheduler per tenant, including Workers-for-Platforms (which has no cron).
+/** One scheduler per account; legacy queued work retains its tenant scheduler.
  * A claimed mutation is never automatically retried after an uncertain outcome.
  */
 export class ThreadsPublisher {

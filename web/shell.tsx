@@ -22,7 +22,13 @@ const menu: { section: string; items: { page: Page; label: string }[] }[] = [
     ],
   },
   { section: "分析", items: [{ page: "insights", label: "インサイト" }] },
-  { section: "設定", items: [{ page: "accounts", label: "アカウント設定" }] },
+  {
+    section: "設定",
+    items: [
+      { page: "accounts", label: "アカウント設定" },
+      { page: "integrations", label: "MCP・API連携" },
+    ],
+  },
 ];
 export function Brand() {
   return (
@@ -133,7 +139,7 @@ export function Sidebar({
           The Harness Cloud ↗
         </a>
         <div className="sidebar-version">
-          Threads Harness v{version} <span>ALPHA</span>
+          Threads Harness v{version} <span>提供中</span>
         </div>
         <Button
           variant="ghost"

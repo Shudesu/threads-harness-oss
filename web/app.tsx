@@ -8,6 +8,7 @@ import {
   validEditor,
   type Editor,
 } from "./composer";
+import { Integrations } from "./integrations";
 import { Brand, Sidebar } from "./shell";
 import { Empty, Icon, Modal, Panel, Status } from "./ui";
 import { PostList } from "./post-list";
@@ -55,6 +56,13 @@ class ApiError extends Error {
 function savedKey() {
   try {
     return sessionStorage.getItem("threads_api_key") ?? "";
+  } catch {
+    return "";
+  }
+}
+function savedSelected() {
+  try {
+    return sessionStorage.getItem("threads_selected_account") ?? "";
   } catch {
     return "";
   }
@@ -166,6 +174,7 @@ export function App() {
     selection.current = "";
     try {
       sessionStorage.removeItem("threads_api_key");
+      sessionStorage.removeItem("threads_selected_account");
     } catch {
       /* storage unavailable */
     }
@@ -206,12 +215,15 @@ export function App() {
       rows: Account[] = await api("/accounts");
     if (generation !== epoch.current) return;
     const id =
-      rows.find((a) => a.id === (preferredId ?? selection.current))?.id ??
+      rows.find(
+        (a) => a.id === (preferredId ?? (selection.current || savedSelected())),
+      )?.id ??
       rows.find((a) => a.status === "connected")?.id ??
       rows[0]?.id ??
       "";
     try {
       sessionStorage.setItem("threads_api_key", key);
+      sessionStorage.setItem("threads_selected_account", id);
     } catch {
       /* keep this in-memory session */
     }
@@ -293,6 +305,11 @@ export function App() {
     void run(async () => {
       epoch.current++;
       selection.current = id;
+      try {
+        sessionStorage.setItem("threads_selected_account", id);
+      } catch {
+        /* optional UI preference */
+      }
       setSelected(id);
       setPosts([]);
       setOverview(null);
@@ -363,7 +380,7 @@ export function App() {
   };
   const fetchInsights = (post: Post) =>
     void run(async () => {
-      await api(`/posts/${post.id}/insights`, "POST");
+      await api(`/posts/${post.id}/insights`, "POST", { accountId: selected });
       await refresh(selected);
       setNotice("インサイトを更新しました。");
     });
@@ -399,7 +416,9 @@ export function App() {
         const result = await api(
           `/posts/${dialog.group.head.id}/queue`,
           "POST",
-          scheduledAt ? { scheduledAt } : {},
+          scheduledAt
+            ? { scheduledAt, accountId: selected }
+            : { accountId: selected },
         );
         setLimits(result.limits);
         setNotice(
@@ -411,7 +430,9 @@ export function App() {
       } else if (dialog.kind === "cancel" || dialog.kind === "archive") {
         if (!dialog.group.head)
           throw new Error("連投の先頭から操作してください。");
-        await api(`/posts/${dialog.group.head.id}/${dialog.kind}`, "POST", {});
+        await api(`/posts/${dialog.group.head.id}/${dialog.kind}`, "POST", {
+          accountId: selected,
+        });
         setNotice(
           dialog.kind === "cancel"
             ? "予約を取り消し、下書きに戻しました。"
@@ -674,6 +695,18 @@ export function App() {
             <span>{attention}</span>
             <Button size="sm" onClick={() => navigate("accounts")}>
               設定を確認
+            </Button>
+          </div>
+        )}
+        {page === "dashboard" && (
+          <div className="alert alert-info row-between">
+            <span>
+              <strong>Threadsの正式提供を開始しました</strong>
+              <br />
+              複数アカウント・メディア投稿・MCP/API連携に対応しています。
+            </span>
+            <Button size="sm" onClick={() => navigate("integrations")}>
+              連携方法を見る
             </Button>
           </div>
         )}
@@ -981,6 +1014,52 @@ export function App() {
               </Panel>
             </>
           ))}
+        {page === "integrations" && (
+          <Integrations accounts={accounts} selected={selected} />
+        )}
+        {page === "accounts" && (
+          <Panel
+            title={`アカウント一覧（${accounts.length}件）`}
+            description="同じ運用者のアカウントを追加できます。別のお客様は環境を分けてください。"
+            className="account-directory"
+          >
+            <div className="account-directory-list">
+              {accounts.map((account) => (
+                <article
+                  key={account.id}
+                  className={
+                    selected === account.id
+                      ? "account-directory-row selected-account"
+                      : "account-directory-row"
+                  }
+                >
+                  <div>
+                    <strong>@{account.username}</strong>
+                    <Status status={account.status} />
+                    <p className="field-help">
+                      ID: <code>{account.id}</code> · 未処理{" "}
+                      {account.pending_count}件
+                    </p>
+                    <p className="field-help">
+                      トークン期限: {dateLabel(account.token_expires_at)}
+                    </p>
+                  </div>
+                  <Button
+                    disabled={busy || selected === account.id}
+                    onClick={() => choose(account.id)}
+                  >
+                    {selected === account.id
+                      ? "操作中"
+                      : "このアカウントを操作"}
+                  </Button>
+                </article>
+              ))}
+            </div>
+            <p className="field-help">
+              追加するアカウントのトークンを、下の接続フォームに入力してください。同じアカウントなら再接続になります。保存しただけでは投稿しません。
+            </p>
+          </Panel>
+        )}
         {page === "accounts" && (
           <div className="settings-grid">
             <div className="stack">
