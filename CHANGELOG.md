@@ -1,7 +1,8 @@
 # Changelog
 
-## Unreleased — 2026-10-26
+## 0.1.1 — 2026-10-26
 
+- Preserve the Workers native-fetch receiver fix and add a local workerd connection regression check.
 - Verify connection permissions and real token/data-access expiry; retain safe Meta error codes.
 - Add connection recheck, expiry warnings, disconnect/reconnect and reservation expiry guard.
 - Preserve history and keep uncertain publications out of automatic retry.

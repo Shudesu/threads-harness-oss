@@ -23,7 +23,7 @@ export function createApi(config, request = fetch) {
 }
 export function createServer(config, request = fetch) {
   const api = createApi(config, request);
-  const server = new McpServer({ name: 'threads-harness', version: '0.1.0' });
+  const server = new McpServer({ name: 'threads-harness', version: '0.1.1' });
   const id = z.string().min(1).max(128);
   const text = z.string().min(1).refine(s => s.trim().length > 0 && [...s].length <= 500, 'Text must contain 1–500 characters.');
   const register = (name, description, schema, readOnly, action) => {

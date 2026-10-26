@@ -37,7 +37,7 @@ async function recordAccountFailure(env: Bindings, id: string, cipher: string, e
   await env.DB.prepare("UPDATE threads_accounts SET last_error_code=?, status=CASE WHEN ? THEN 'reauth_required' ELSE status END, updated_at=? WHERE id=? AND token_cipher=?")
     .bind(error.code, error.metaCode === 190 || error.code === 'missing_permissions' ? 1 : 0, now(), id, cipher).run();
 }
-app.get('/health', c => c.json({ status: 'ok', product: 'threads', version: '0.1.0' }));
+app.get('/health', c => c.json({ status: 'ok', product: 'threads', version: '0.1.1' }));
 app.route('/', adminSso);
 app.use('/api/*', async (c, next) => {
   if (!c.env.API_KEY) return c.json(fail('Service not configured'), 503);

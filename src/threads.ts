@@ -29,7 +29,7 @@ const expiration = (value: unknown): string | null => {
 // Contract: Meta's official sample https://github.com/fbsamples/threads_api
 // Use a fixed upstream; never log tokens, upstream bodies or request URLs.
 export class ThreadsApi {
-  constructor(private token: string, private request: typeof fetch = fetch) {}
+  constructor(private token: string, private request: typeof fetch = (input, init) => fetch(input, init)) {}
   async call(path: string, body?: Record<string, string>): Promise<Record<string, unknown>> {
     const response = await this.request(`https://graph.threads.net/v1.0/${path}`, {
       method: body ? 'POST' : 'GET',
