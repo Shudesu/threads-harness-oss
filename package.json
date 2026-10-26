@@ -1,6 +1,6 @@
 {
   "name": "threads-harness",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,7 +12,8 @@
     "check": "npm test && npm run build",
     "build:wfp-bundle": "npm run build && node scripts/release/build-wfp-bundle.mjs",
     "mcp": "node mcp/index.mjs",
-    "test:workerd": "node scripts/check-connect-workerd.mjs"
+    "test:workerd": "node scripts/check-connect-workerd.mjs",
+    "test:media-workerd": "node scripts/check-media-workerd.mjs"
   },
   "dependencies": {
     "@cloudflare/kumo": "^2.12.0",

@@ -1,3 +1,4 @@
+import type { MediaItem } from '../shared/media.mjs';
 export const REQUIRED_SCOPES = ['threads_basic', 'threads_content_publish', 'threads_manage_insights'] as const;
 
 // Only numeric Meta diagnostics cross the API/storage boundary. Never retain
@@ -95,9 +96,23 @@ export class ThreadsApi {
     const data = Array.isArray(result.data) ? result.data[0] : null;
     return { posts: parseQuota(data?.quota_usage, data?.config), ...(includeReplies ? { replies: parseQuota(data?.reply_quota_usage, data?.reply_config) } : {}), checkedAt: new Date().toISOString() };
   }
-  async create(user: string, text: string, replyToId?: string) {
-    const result = await this.call(`${encodeURIComponent(user)}/threads`, { media_type: 'TEXT', text, ...(replyToId ? { reply_to_id: replyToId } : {}) });
-    if (typeof result.id !== 'string') throw new Error('missing_container');
+  async create(user: string, text: string, replyToId?: string, media?: MediaItem) {
+    return this.createContainer(user, { media_type: media?.type ?? 'TEXT', text,
+      ...(media ? { [media.type === 'IMAGE' ? 'image_url' : 'video_url']: media.url } : {}),
+      ...(replyToId ? { reply_to_id: replyToId } : {}) });
+  }
+  async createMediaChild(user: string, media: MediaItem) {
+    return this.createContainer(user, { media_type: media.type, is_carousel_item: 'true',
+      [media.type === 'IMAGE' ? 'image_url' : 'video_url']: media.url });
+  }
+  async createCarousel(user: string, text: string, children: string[], replyToId?: string) {
+    if (children.length < 2 || children.length > 20 || children.some(id => !/^\d+$/.test(id))) throw new Error('invalid_children');
+    return this.createContainer(user, { media_type: 'CAROUSEL', children: children.join(','), text,
+      ...(replyToId ? { reply_to_id: replyToId } : {}) });
+  }
+  private async createContainer(user: string, body: Record<string, string>) {
+    const result = await this.call(`${encodeURIComponent(user)}/threads`, body);
+    if (typeof result.id !== 'string' || !/^\d+$/.test(result.id)) throw new Error('missing_container');
     return result.id;
   }
   async insights(postId: string): Promise<Record<string, number | null>> {

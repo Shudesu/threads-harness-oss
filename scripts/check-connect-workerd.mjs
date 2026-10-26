@@ -34,7 +34,7 @@ const options = {
 const mf = new miniflare.Miniflare(miniflare.convertV4MiniflareOptions ? miniflare.convertV4MiniflareOptions(options) : options);
 try {
   const db = await mf.getD1Database('DB');
-  for (const file of ['0001_initial.sql', '0002_admin_sso.sql', '0003_chains_insights.sql', '0004_connection_health.sql', '0005_account_schedulers.sql', '0006_publication_safety.sql']) {
+  for (const file of ['0001_initial.sql', '0002_admin_sso.sql', '0003_chains_insights.sql', '0004_connection_health.sql', '0005_account_schedulers.sql', '0006_publication_safety.sql', '0007_media.sql']) {
     const sql = await readFile(new URL(`../migrations/${file}`, import.meta.url), 'utf8');
     for (const statement of sql.replace(/^\s*--[^\n]*/gm, '').split(';').filter(s => s.trim())) await db.prepare(statement).run();
   }
@@ -75,7 +75,23 @@ try {
   assert.equal(queued.status, 200);
   assert.equal((await db.prepare('SELECT status FROM threads_posts WHERE id=?').bind(postId).first()).status, 'queued');
   assert.equal((await request('/posts', 'POST', { accountId: '456', text: '😀'.repeat(126) })).status, 400);
-  console.log(JSON.stringify({ connectionStatus: connected.status, accounts: 1, draftStatus: draft.status, drafts: 1, durableObjectQueueStatus: queued.status, preservedErrorKind: denied.kind, outboundReadOnlyChecks: outboundCalls, publications: 0 }));
+  // Media drafts exercise the actual Workers runtime and DO queue boundary,
+  // without letting the alarm publish to the mocked upstream.
+  let mediaDrafts = 0;
+  for (const media of [
+    [{type:'IMAGE',url:'https://cdn.example.com/a.png'}],
+    [{type:'VIDEO',url:'https://cdn.example.com/a.mp4'}],
+    [{type:'IMAGE',url:'https://cdn.example.com/a.png'},{type:'VIDEO',url:'https://cdn.example.com/a.mp4'}],
+  ]) {
+    const response = await request('/posts','POST',{accountId:'456',text:'',media});
+    assert.equal(response.status,201);
+    const id = (await response.json()).data.id;
+    assert.equal((await request(`/posts/${id}/queue`,'POST',{scheduledAt:new Date(Date.now()+1800000).toISOString()})).status,200);
+    assert.equal((await request(`/posts/${id}/cancel`,'POST',{})).status,200);
+    const saved = await db.prepare('SELECT status,media_json FROM threads_posts WHERE id=?').bind(id).first();
+    assert.equal(saved.status,'draft'); assert.deepEqual(JSON.parse(saved.media_json),media); mediaDrafts++;
+  }
+  console.log(JSON.stringify({ connectionStatus: connected.status, accounts: 1, draftStatus: draft.status, drafts: 1, mediaDrafts, mediaQueueAndCancel: mediaDrafts, durableObjectQueueStatus: queued.status, preservedErrorKind: denied.kind, outboundReadOnlyChecks: outboundCalls, publications: 0 }));
 } finally {
   await mf.dispose();
 }

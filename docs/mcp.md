@@ -25,3 +25,5 @@ MCP接続はAPIキーによる管理者権限です。`THREADS_HARNESS_READ_ONLY
 読み書きモードは `THREADS_HARNESS_READ_ONLY=false`。公開・予約は本文・対象アカウント・日時に対する本人の明示承認後に `confirmed=true` を指定します。パラメータは承認そのものを代替しません。通信失敗時は保存状態を確認し、更新・公開を自動再試行しません。接続トークンやアプリシークレットの入力ツールは公開しません。
 
 保留予約の再開にも `confirmed=true` が必要です。再接続だけでは再開しません。絵文字の文字数計算は管理画面・Workerと同じ共通関数を使います。
+
+Media drafts accept `media` (IMAGE/VIDEO public HTTPS URL items, up to 20). Captions may be empty with media. The create tool only saves; queue approval must cover every attachment URL and its order as well as the text/account/time. Read-only mode hides these write tools. File uploads are not supported.

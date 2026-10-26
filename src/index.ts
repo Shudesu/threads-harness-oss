@@ -1,4 +1,4 @@
-import { validThreadsText } from '../shared/text.mjs';
+import { validDraftContent, type MediaItem } from '../shared/media.mjs';
 import { Hono } from 'hono';
 import { ThreadsApi, ThreadsError, validateEncryptionKey, seal, unseal } from './threads';
 import { adminSso } from './admin-sso';
@@ -7,7 +7,7 @@ export interface Bindings {
   DB: D1Database; ASSETS: Fetcher; API_KEY: string; TOKEN_ENCRYPTION_KEY: string;
   PUBLISHER: DurableObjectNamespace; ADMIN_SSO_SECRET?: string; THREADS_APP_ACCESS_TOKEN?: string;
 }
-type Post = { id: string; account_id: string; text: string; status: string; scheduled_at: string | null; container_id: string | null; published_id: string | null; parent_id?: string | null; status_check_count?: number; next_attempt_at?: string | null };
+type Post = { media_json?: string; media_children_json?: string; id: string; account_id: string; text: string; status: string; scheduled_at: string | null; container_id: string | null; published_id: string | null; parent_id?: string | null; status_check_count?: number; next_attempt_at?: string | null };
 export const app = new Hono<{ Bindings: Bindings }>();
 const now = () => new Date().toISOString();
 const fail = (message: string) => ({ success: false, error: message });
@@ -41,7 +41,7 @@ async function recordAccountFailure(env: Bindings, id: string, cipher: string, e
   await env.DB.prepare("UPDATE threads_accounts SET last_error_code=?, last_error_kind=?, queue_paused=CASE WHEN ? THEN 1 ELSE queue_paused END, status=CASE WHEN ? THEN 'reauth_required' ELSE status END, updated_at=? WHERE id=? AND token_cipher=?")
     .bind(error.code, error.kind, Number(invalid), Number(invalid), now(), id, cipher).run();
 }
-app.get('/health', c => c.json({ status: 'ok', product: 'threads', version: '0.1.2' }));
+app.get('/health', c => c.json({ status: 'ok', product: 'threads', version: '0.1.3' }));
 app.route('/', adminSso);
 app.use('/api/*', async (c, next) => {
   if (!c.env.API_KEY) return c.json(fail('Service not configured'), 503);
@@ -61,7 +61,7 @@ app.get('/api/health', async c => {
   try {
     const columns = (await c.env.DB.prepare('PRAGMA table_info(threads_accounts)').all<{ name: string }>()).results;
     const posts = (await c.env.DB.prepare('PRAGMA table_info(threads_posts)').all<{ name: string }>()).results;
-    migrations = ['token_expires_at', 'data_access_expires_at', 'permissions_checked_at', 'last_error_code', 'queue_paused', 'last_error_kind'].every(name => columns.some(column => column.name === name)) && ['scheduler_key', 'error_kind', 'next_attempt_at', 'status_check_count', 'shares'].every(name => posts.some(column => column.name === name));
+    migrations = ['token_expires_at', 'data_access_expires_at', 'permissions_checked_at', 'last_error_code', 'queue_paused', 'last_error_kind'].every(name => columns.some(column => column.name === name)) && ['scheduler_key', 'error_kind', 'next_attempt_at', 'status_check_count', 'shares', 'media_json', 'media_children_json'].every(name => posts.some(column => column.name === name));
     const sso = await c.env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='admin_sso_jti'").first();
     migrations = migrations && Boolean(sso);
     accounts = (await c.env.DB.prepare('SELECT COUNT(*) AS count FROM threads_accounts').first<{ count: number }>())?.count ?? null;
@@ -130,25 +130,25 @@ app.get('/api/posts', async c => {
   if (!account) return c.json(fail('accountId required'), 400);
   return c.json(ok((await c.env.DB.prepare("SELECT * FROM threads_posts WHERE account_id = ? AND status != 'archived' ORDER BY created_at DESC LIMIT 200").bind(account).all()).results));
 });
-const validText = validThreadsText;
 app.post('/api/posts', async c => {
-  const { text, accountId } = await c.req.json();
-  if (!validText(text) || typeof accountId !== 'string') return c.json(fail('本文は1〜500文字、アカウントの選択が必要です'), 400);
+  const { text = '', accountId, media = [] } = await c.req.json();
+  if (!validDraftContent(text, media) || typeof accountId !== 'string') return c.json(fail('本文は500換算以内、メディアは公開HTTPS URLで最大20件、アカウントの選択が必要です'), 400);
   const account = await c.env.DB.prepare("SELECT id FROM threads_accounts WHERE id = ? AND status = 'connected'").bind(accountId).first();
   if (!account) return c.json(fail('接続済みのアカウントが必要です'), 400);
   const id = crypto.randomUUID();
-  await c.env.DB.prepare('INSERT INTO threads_posts (id, account_id, text, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').bind(id, accountId, text, now(), now()).run();
+  await c.env.DB.prepare('INSERT INTO threads_posts (id, account_id, text, media_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)').bind(id, accountId, text, JSON.stringify(media), now(), now()).run();
   return c.json(ok({ id }), 201);
 });
 // The VPS workflow produced a three-part hook/body/conclusion chain. Keep each
 // part durable so a failure after publishing part one never replays that part.
 app.post('/api/chains', async c => {
-  const { accountId, parts } = await c.req.json();
-  if (typeof accountId !== 'string' || !Array.isArray(parts) || parts.length < 2 || parts.length > 10 || !parts.every(validText)) return c.json(fail('連投は2〜10件、各本文は1〜500文字です'), 400);
+  const { accountId, parts: inputParts } = await c.req.json();
+  const parts = Array.isArray(inputParts) ? inputParts.map(p => typeof p === 'string' ? { text: p, media: [] } : p) : inputParts;
+  if (typeof accountId !== 'string' || !Array.isArray(parts) || parts.length < 2 || parts.length > 10 || !parts.every(p => p && validDraftContent(p.text ?? '', p.media ?? []))) return c.json(fail('連投は2〜10件、各本文は500換算以内（素材なしの場合は必須）です'), 400);
   if (!await c.env.DB.prepare("SELECT id FROM threads_accounts WHERE id=? AND status='connected'").bind(accountId).first()) return c.json(fail('接続済みのアカウントが必要です'), 400);
   const chainId = crypto.randomUUID();
   const ids = parts.map(() => crypto.randomUUID());
-  await c.env.DB.batch(parts.map((text, index) => c.env.DB.prepare('INSERT INTO threads_posts (id,account_id,text,chain_id,part_index,parent_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)').bind(ids[index], accountId, text, chainId, index, index ? ids[index - 1] : null, now(), now())));
+  await c.env.DB.batch(parts.map((part, index) => c.env.DB.prepare('INSERT INTO threads_posts (id,account_id,text,media_json,chain_id,part_index,parent_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)').bind(ids[index], accountId, part.text ?? '', JSON.stringify(part.media ?? []), chainId, index, index ? ids[index - 1] : null, now(), now())));
   return c.json(ok({ chainId, ids }), 201);
 });
 app.post('/api/posts/:id/insights', async c => {
@@ -168,9 +168,12 @@ app.get('/api/insights', async c => {
   return c.json(ok(data));
 });
 app.patch('/api/posts/:id', async c => {
-  const { text } = await c.req.json();
-  if (!validText(text)) return c.json(fail('本文は1〜500文字です'), 400);
-  const result = await c.env.DB.prepare("UPDATE threads_posts SET text = ?, updated_at = ? WHERE id = ? AND status = 'draft'").bind(text, now(), c.req.param('id')).run();
+  const input = await c.req.json();
+  const current = await c.env.DB.prepare("SELECT text,media_json FROM threads_posts WHERE id=? AND status='draft'").bind(c.req.param('id')).first<{ text: string; media_json: string }>();
+  if (!current) return c.json(fail('編集できる下書きがありません'), 409);
+  const text = input.text ?? current.text, media = input.media ?? JSON.parse(current.media_json);
+  if (!validDraftContent(text, media)) return c.json(fail('本文は500換算以内、メディアは公開HTTPS URLで最大20件です'), 400);
+  const result = await c.env.DB.prepare("UPDATE threads_posts SET text=?, media_json=?, updated_at=? WHERE id=? AND status='draft'").bind(text, JSON.stringify(media), now(), c.req.param('id')).run();
   if (!result.meta.changes) return c.json(fail('編集できる下書きがありません'), 409);
   return c.json(ok({ updated: true }));
 });
@@ -246,9 +249,9 @@ export class ThreadsPublisher {
         await this.state.storage.put('scheduler_key', scope);
         const target = await chainTarget(this.env.DB, payload.id);
         if (!target) return Response.json(fail('連投の先頭から操作してください'), { status: 409 });
-        const drafts = (await this.env.DB.prepare(`SELECT parent_id, status, text FROM threads_posts WHERE ${target.where}`).bind(target.id).all<{ parent_id: string | null; status: string; text: string }>()).results;
+        const drafts = (await this.env.DB.prepare(`SELECT parent_id, status, text, media_json FROM threads_posts WHERE ${target.where}`).bind(target.id).all<{ parent_id: string | null; status: string; text: string; media_json: string }>()).results;
         if (!drafts.length || drafts.some(p => p.status !== 'draft')) return Response.json(fail('すでに公開処理中、または下書きがありません'), { status: 409 });
-        if (drafts.some(p => !validText(p.text))) return Response.json(fail('絵文字をUTF-8換算した本文を500以内に修正してください。'), { status: 400 });
+        if (drafts.some(p => !validDraftContent(p.text, JSON.parse(p.media_json)))) return Response.json(fail('絵文字をUTF-8換算した本文を500以内に修正してください。'), { status: 400 });
         const account = await this.env.DB.prepare('SELECT status,queue_paused,token_cipher,token_expires_at,data_access_expires_at FROM threads_accounts WHERE id=?').bind(owner.account_id).first<AccountHealth & { token_cipher: string }>();
         if (!account || account.status !== 'connected' || account.queue_paused || expired(account)) return Response.json(fail('接続状態と一時停止を確認してください。'), { status: 409 });
         const replies = drafts.filter(p => p.parent_id).length;
@@ -283,17 +286,17 @@ export class ThreadsPublisher {
     for (const post of due.results) await processPost(this.env, post);
     await this.state.blockConcurrencyWhile(async () => {
       // Include future reservations and interrupted mutations, not just due rows.
-      const pending = await this.env.DB.prepare("SELECT MIN(CASE WHEN status IN ('creating','publishing') THEN ? WHEN status='queued' THEN MAX(scheduled_at, COALESCE(next_attempt_at,'')) ELSE MAX(?, COALESCE(next_attempt_at,'')) END) AS next_at, COUNT(*) AS count FROM threads_posts WHERE scheduler_key=? AND (status IN ('creating','publishing') OR (status IN ('queued','processing') AND account_id IN (SELECT id FROM threads_accounts WHERE status='connected' AND queue_paused=0)))")
+      const pending = await this.env.DB.prepare("SELECT MIN(CASE WHEN status IN ('creating','publishing') THEN ? WHEN status='queued' THEN MAX(scheduled_at, COALESCE(next_attempt_at,'')) ELSE COALESCE(next_attempt_at,?) END) AS next_at, COUNT(*) AS count FROM threads_posts WHERE scheduler_key=? AND (status IN ('creating','publishing') OR (status IN ('queued','processing') AND account_id IN (SELECT id FROM threads_accounts WHERE status='connected' AND queue_paused=0)))")
         .bind(new Date(Date.now() + 60000).toISOString(), new Date(Date.now() + 60000).toISOString(), scope).first<{ next_at: string | null; count: number }>();
       if (!pending?.count) await this.state.storage.deleteAlarm();
-      else await this.state.storage.setAlarm(Math.max(Date.now() + 60000, Date.parse(pending.next_at ?? now())));
+      else await this.state.storage.setAlarm(Math.max(Date.now() + 1000, Date.parse(pending.next_at ?? now())));
     });
   }
 }
 
 async function waitForContainer(env: Bindings, post: Post, reason: string) {
   const count = await env.DB.prepare("UPDATE threads_posts SET status_check_count=status_check_count+1 WHERE id=? AND status='publishing' RETURNING status_check_count").bind(post.id).first<{ status_check_count: number }>();
-  if (!count || count.status_check_count >= 5) throw new ThreadsError('container_status_timeout', '5回の状態確認で公開可否を確定できませんでした。', 409);
+  if (!count || count.status_check_count >= (JSON.parse(post.media_json ?? '[]').length ? 15 : 5)) throw new ThreadsError('container_status_timeout', '状態確認の上限に達しました。公開可否を確認してください。', 409);
   await env.DB.prepare("UPDATE threads_posts SET status='processing', error_code=?, error_kind='container_error', next_attempt_at=?, updated_at=? WHERE id=? AND status='publishing'")
     .bind(reason, new Date(Date.now() + 60000).toISOString(), now(), post.id).run();
 }
@@ -310,7 +313,9 @@ export async function processPost(env: Bindings, post: Post, clientFactory = (to
     if (!parent?.published_id) return;
     replyToId = parent.published_id;
   }
-  const next = post.status === 'queued' ? 'creating' : 'publishing';
+  const media: MediaItem[] = JSON.parse(post.media_json ?? '[]');
+  const carouselPreparing = media.length > 1 && !post.container_id;
+  const next = post.status === 'queued' || carouselPreparing ? 'creating' : 'publishing';
   let claimed = false, publishAttempted = false;
   try {
     const client = clientFactory(await unseal(account.token_cipher, env.TOKEN_ENCRYPTION_KEY));
@@ -318,12 +323,53 @@ export async function processPost(env: Bindings, post: Post, clientFactory = (to
     // another app or predict a future rolling window.
     const limits = await client.publishingLimits(post.account_id, Boolean(post.parent_id));
     if ((post.parent_id ? limits.replies?.remaining ?? 0 : limits.posts.remaining) < 1) throw new ThreadsError('quota_exhausted', '現在の公開枠が不足しています。', 409);
-    if (!validText(post.text)) throw new ThreadsError('text_too_long', '絵文字をUTF-8換算した本文を500以内に修正してください。', 400);
+    if (!validDraftContent(post.text, media)) throw new ThreadsError('text_too_long', '絵文字をUTF-8換算した本文を500以内に修正してください。', 400);
     const result = await env.DB.prepare('UPDATE threads_posts SET status=?, updated_at=? WHERE id=? AND status=?').bind(next, now(), post.id, post.status).run();
     if (!result.meta.changes) return;
     claimed = true;
     if (next === 'creating') {
-      const container = await client.create(post.account_id, post.text, replyToId);
+      let container: string;
+      if (carouselPreparing) {
+        const children: { id: string; ready: boolean; checks: number }[] = JSON.parse(post.media_children_json ?? '[]');
+        if (children.length > media.length) throw new ThreadsError('container_children_invalid', 'メディアの保存状態を確認してください。', 409);
+        const saveChildren = async () => {
+          await env.DB.prepare("UPDATE threads_posts SET media_children_json=?,updated_at=? WHERE id=? AND status='creating'").bind(JSON.stringify(children), now(), post.id).run();
+        };
+        const deferChildren = async (delay = 1000) => {
+          await env.DB.prepare("UPDATE threads_posts SET status='processing',next_attempt_at=?,updated_at=? WHERE id=? AND status='creating'").bind(new Date(Date.now() + delay).toISOString(), now(), post.id).run();
+        };
+        // Bound each alarm's work. Persist each returned ID before moving on;
+        // an uncertain create is quarantined, never replayed automatically.
+        let budget = 3;
+        while (children.length < media.length && budget-- > 0) {
+          const id = await client.createMediaChild(post.account_id, media[children.length]);
+          children.push({ id, ready: false, checks: 0 });
+          await saveChildren();
+        }
+        if (children.length < media.length || budget < 3) { await deferChildren(); return; }
+        let pending = false;
+        for (const child of children.filter(c => !c.ready).slice(0, 3)) {
+          let state;
+          try { state = await client.status(child.id); }
+          catch (error) {
+            if (!(error instanceof ThreadsError) || error.upstreamStatus !== 404 || ['token_invalid','permission_denied'].includes(error.kind)) throw error;
+            state = { status: 'IN_PROGRESS', error_message: null };
+          }
+          if (state.status === 'FINISHED') child.ready = true;
+          else if (state.status === 'IN_PROGRESS') {
+            child.checks++; pending = true;
+            if (child.checks >= 15) throw new ThreadsError('container_child_timeout', 'カルーセル素材の処理が時間内に完了しませんでした。', 409);
+          } else {
+            const code = state.status === 'EXPIRED' ? 'container_expired' : state.status === 'ERROR'
+              ? `container_error_child${state.error_message ? '_' + state.error_message.toLowerCase() : ''}`
+              : state.status === 'PUBLISHED' ? 'container_already_published' : 'container_unknown_state';
+            throw new ThreadsError(code, 'カルーセル素材の状態を確認してください。', 409);
+          }
+          await saveChildren();
+        }
+        if (children.some(c => !c.ready)) { await deferChildren(pending ? 60000 : 1000); return; }
+        container = await client.createCarousel(post.account_id, post.text, children.map(c => c.id), replyToId);
+      } else container = await client.create(post.account_id, post.text, replyToId, media[0]);
       await env.DB.prepare("UPDATE threads_posts SET status='processing', container_id=?, error_code=NULL, error_kind=NULL, next_attempt_at=?, updated_at=? WHERE id=? AND status='creating'")
         .bind(container, new Date(Date.now() + 60000).toISOString(), now(), post.id).run();
     } else {
