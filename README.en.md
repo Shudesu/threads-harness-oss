@@ -2,7 +2,7 @@
 
 A self-hosted Cloudflare Worker with D1, Durable Objects and a React/Kumo console for text drafts, chains, scheduled publication and saved insights. MIT licensed.
 
-This alpha requires a **Threads user access token pasted into the console**. OAuth sign-in, automatic token refresh and a reconciliation UI are not implemented. One live text publication and six insight metrics have been verified. Live Meta media publication remains unverified.
+This alpha requires a **Threads user access token pasted into the console**. OAuth sign-in, automatic token refresh and a reconciliation UI are not implemented. Live text, reply-chain, PNG image, H.264/AAC MP4 video, two-item mixed carousel and scheduled text publication plus six metrics have been verified on one authorized account. Scheduling starts preparation at the requested time, rather than guaranteeing exact-time publication. See [verification scope](docs/reviews/live-media-verification-20261026.md).
 
 Create a Meta app with the Threads use case, invite your Threads profile as a tester and accept the invitation in Threads account settings → Website permissions. Grant `threads_basic`, `threads_content_publish`, and `threads_manage_insights`. Exchange a short-lived token for a long-lived token using the official server-side procedure. Do not use a Facebook, Instagram or app token in the connection form.
 
