@@ -1,10 +1,11 @@
+import { tenantAnalyticsRoutes, type AnalyticsBindings } from './analytics/server';
 import { validDraftContent, type MediaItem } from '../shared/media.mjs';
 import { Hono, type Context } from 'hono';
 import openapi from '../openapi.json';
 import { ThreadsApi, ThreadsError, validateEncryptionKey, seal, unseal } from './threads';
 import { adminSso } from './admin-sso';
 
-export interface Bindings {
+export interface Bindings extends AnalyticsBindings {
   DB: D1Database; ASSETS: Fetcher; API_KEY: string; TOKEN_ENCRYPTION_KEY: string;
   PUBLISHER: DurableObjectNamespace; ADMIN_SSO_SECRET?: string; THREADS_APP_ACCESS_TOKEN?: string;
 }
@@ -56,6 +57,7 @@ app.use('/api/*', async (c, next) => {
   c.header('Cache-Control', 'no-store');
   return next();
 });
+app.route('/api/product-analytics', tenantAnalyticsRoutes<{Bindings:Bindings}>('threads', () => ({id:'workspace-owner',role:'owner'})));
 app.get('/api/health', async c => {
   let encryptionKey = true;
   try { validateEncryptionKey(c.env.TOKEN_ENCRYPTION_KEY ?? ''); } catch { encryptionKey = false; }

@@ -1,3 +1,4 @@
+import { TenantAnalytics } from "./analytics/Controls";
 import { Dashboard } from "./dashboard";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@cloudflare/kumo/components/button";
@@ -144,6 +145,11 @@ export function App() {
     },
     [key],
   );
+  const analyticsApi = useCallback(async <T,>(path:string, options?:RequestInit):Promise<{success:boolean;data:T}> => {
+    const response=await fetch(path,{...options,headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json"}});
+    if(!response.ok)throw new Error('analytics_request_failed');
+    return response.json();
+  },[key]);
   const refresh = useCallback(
     async (accountId = selection.current) => {
       const generation = epoch.current;
@@ -652,6 +658,7 @@ export function App() {
         <Brand />
       </header>
       <main id="main-content" className="main-content">
+        <TenantAnalytics path={page==="dashboard"?"/":"/"+page} api={analyticsApi} apiOrigin={window.location.origin} showSettings={page==="accounts"} />
         <header className="page-header">
           <div>
             <h1 ref={heading} tabIndex={-1}>

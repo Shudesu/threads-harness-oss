@@ -17,6 +17,7 @@ const modules = readdirSync(join(output, 'worker')).filter(f => f.endsWith('.js'
 if (!modules.includes('index.js')) throw new Error('Worker entry was not built');
 for (const f of modules) cpSync(join(output, 'worker', f), join(bundle, 'worker', f));
 writeFileSync(join(bundle, 'worker-manifest.json'), JSON.stringify({
+  adminAnalyticsVersion: 1,
   observability: config.observability ?? { enabled: false },
   entry: 'index.js', compatibilityDate: config.compatibility_date,
   compatibilityFlags: config.compatibility_flags ?? [], modules,

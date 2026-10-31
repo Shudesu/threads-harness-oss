@@ -3429,6 +3429,168 @@
           }
         }
       }
+    },
+    "/api/product-analytics/preferences": {
+      "get": {
+        "operationId": "getAnalyticsPreferences",
+        "summary": "Read optional usage measurement configuration without exposing keys",
+        "responses": {
+          "200": {
+            "description": "Authenticated analytics response; collection remains off unless configured"
+          },
+          "400": {
+            "description": "Invalid content-free event contract"
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Origin or CSRF refused"
+          },
+          "413": {
+            "description": "Payload too large"
+          }
+        }
+      },
+      "post": {
+        "operationId": "setAnalyticsPreference",
+        "summary": "Stop or resume usage measurement in this browser",
+        "responses": {
+          "200": {
+            "description": "Authenticated analytics response; collection remains off unless configured"
+          },
+          "400": {
+            "description": "Invalid content-free event contract"
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Origin or CSRF refused"
+          },
+          "413": {
+            "description": "Payload too large"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "choice"
+                ],
+                "properties": {
+                  "choice": {
+                    "type": "string",
+                    "enum": [
+                      "on",
+                      "off"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/product-analytics/events": {
+      "post": {
+        "operationId": "captureUsageEvents",
+        "summary": "Record at most 20 content-free admin UI events; never performs a social action",
+        "responses": {
+          "200": {
+            "description": "Authenticated analytics response; collection remains off unless configured"
+          },
+          "400": {
+            "description": "Invalid content-free event contract"
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Origin or CSRF refused"
+          },
+          "413": {
+            "description": "Payload too large"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "events"
+                ],
+                "properties": {
+                  "events": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 20,
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "kind",
+                        "screen",
+                        "age_ms"
+                      ],
+                      "properties": {
+                        "kind": {
+                          "enum": [
+                            "screen",
+                            "action",
+                            "operation",
+                            "engagement"
+                          ]
+                        },
+                        "screen": {
+                          "enum": [
+                            "dashboard",
+                            "chats",
+                            "friends",
+                            "posts",
+                            "compose",
+                            "schedule",
+                            "insights",
+                            "accounts",
+                            "settings",
+                            "integrations",
+                            "broadcasts",
+                            "scenarios",
+                            "campaigns",
+                            "tags",
+                            "forms",
+                            "media",
+                            "rich_messages",
+                            "rich_menus",
+                            "staff",
+                            "webinars",
+                            "bookings",
+                            "automation",
+                            "personal_line"
+                          ]
+                        },
+                        "age_ms": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 60000
+                        }
+                      },
+                      "description": "Only the finite contract fields are accepted. Raw content, identifiers, URLs, and additional fields are rejected."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
   }
 }

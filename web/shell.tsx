@@ -75,7 +75,7 @@ export function Sidebar({
           id={mobile ? "mobile-account" : "sidebar-account"}
           value={selected}
           disabled={busy}
-          onChange={(e) => choose(e.target.value)}
+          data-harness-action="account_switch" data-harness-event="change" onChange={(e) => choose(e.target.value)}
         >
           <option value="">アカウントを選択</option>
           {accounts.map((a) => (
@@ -99,7 +99,7 @@ export function Sidebar({
                 className={`nav-item ${page === item.page ? "active" : ""}`}
                 aria-current={page === item.page ? "page" : undefined}
                 disabled={busy}
-                onClick={() => navigate(item.page)}
+                data-harness-action="navigate" onClick={() => navigate(item.page)}
               >
                 <Icon name={item.page} />
                 <span>{item.label}</span>
