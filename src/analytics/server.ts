@@ -67,7 +67,7 @@ export function tenantAnalyticsRoutes<E extends Env & {Bindings:AnalyticsBinding
       properties:{...safe,product,source:'tenant_console',schema_version:1,environment:'production',internal:c.env.PRODUCT_ANALYTICS_INTERNAL==='true',actor_scope:'credential',evidence:e.kind==='operation'?'browser_http_response':'browser_interaction',role:s.actor.role,workspace:'workspace_'+s.workspace,
         $process_person_profile:false,$geoip_disable:true,$ip:null}};});
     try {c.executionCtx.waitUntil((async()=>{try{
-      const r=await fetch(c.env.POSTHOG_HOST+'/batch/',{method:'POST',redirect:'error',signal:AbortSignal.timeout(2000),headers:{'Content-Type':'application/json'},body:JSON.stringify({api_key:c.env.POSTHOG_PROJECT_TOKEN,batch})});
+      const r=await fetch(c.env.POSTHOG_HOST+'/batch/',{method:'POST',redirect:'manual',signal:AbortSignal.timeout(2000),headers:{'Content-Type':'application/json'},body:JSON.stringify({api_key:c.env.POSTHOG_PROJECT_TOKEN,batch})});
       if(!r.ok)console.warn('tenant_analytics: delivery_failed');await r.body?.cancel();
     }catch{console.warn('tenant_analytics: delivery_failed');}})());}catch{/* No execution context: do not send. */}
     return c.json({success:true,data:{accepted:batch.length}});
