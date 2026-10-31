@@ -37,14 +37,14 @@ export function start(config:ReplayConfig,initialScreen:string):Controller|undef
       const p=event.properties;
       const properties:Record<string,unknown>={token:config.token,distinct_id:config.distinctId,
         $session_id:p.$session_id,$window_id:p.$window_id,$lib:'web',$lib_version:'1.444.0',
-        $current_url:href(),$process_person_profile:false,$geoip_disable:true,$ip:null,
+        $current_url:href(),$snapshot_host:'harness.invalid',$config_defaults:'2026-08-30',$process_person_profile:false,$geoip_disable:true,$ip:null,
         product:config.product,screen,source:config.product==='cloud'?'cloud_console':'tenant_console',
         environment:'production',internal:config.internal===true,replay_privacy_version:1};
       if(event.event==='$snapshot'){
         if(!Array.isArray(p.$snapshot_data))return null; // Never forward opaque/compressed snapshots.
         const snapshots=p.$snapshot_data.map(v=>privacy.snapshot(v,href())).filter(Boolean);
         if(!snapshots.length)return null;
-        properties.$snapshot_data=snapshots;properties.$snapshot_bytes=JSON.stringify(snapshots).length;
+        properties.$snapshot_data=snapshots;properties.$snapshot_bytes=new Blob([JSON.stringify(snapshots)]).size;
       }
       return {event:event.event,uuid:event.uuid,timestamp:event.timestamp,properties};
     },
