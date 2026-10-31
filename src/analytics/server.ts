@@ -2,7 +2,7 @@ import { Hono, type Context, type Env } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { validateEvent, type WireEvent } from './contract';
 
-export interface AnalyticsBindings { PRODUCT_ANALYTICS_ENABLED?:string; PRODUCT_ANALYTICS_INTERNAL?:string; POSTHOG_HOST?:string; POSTHOG_PROJECT_TOKEN?:string; ADMIN_SSO_SECRET?:string; ADMIN_ORIGIN?:string; }
+export interface AnalyticsBindings { PRODUCT_ANALYTICS_ENABLED?:string; PRODUCT_REPLAY_ENABLED?:string; PRODUCT_REPLAY_NOTICE_VERSION?:string; PRODUCT_ANALYTICS_INTERNAL?:string; POSTHOG_HOST?:string; POSTHOG_PROJECT_TOKEN?:string; ADMIN_SSO_SECRET?:string; ADMIN_ORIGIN?:string; }
 type Product='line'|'x'|'ig'|'threads';
 type Actor={id:string;role:'owner'|'admin'|'editor'|'viewer'|'staff'};
 const cookieName='__Host-harness_analytics';
@@ -39,6 +39,11 @@ export function tenantAnalyticsRoutes<E extends Env & {Bindings:AnalyticsBinding
   app.get('/preferences',async c=>{
     const s=await state(c);if(!s)return c.json({success:false,error:'Unauthorized'},401);
     return c.json({success:true,data:{enabled:s.enabled,choice:s.choice,privacySignal:s.privacySignal}});
+  });
+  app.get('/replay-config',async c=>{
+    const s=await state(c);if(!s)return c.json({success:false,error:'Unauthorized'},401);
+    const enabled=s.enabled&&s.choice!=='off'&&!s.privacySignal&&c.env.PRODUCT_REPLAY_ENABLED==='true'&&c.env.PRODUCT_REPLAY_NOTICE_VERSION==='2026-11-01.3';
+    return c.json({success:true,data:enabled?{enabled:true,token:c.env.POSTHOG_PROJECT_TOKEN,host:c.env.POSTHOG_HOST,distinctId:'tenant_'+s.id,product,internal:c.env.PRODUCT_ANALYTICS_INTERNAL==='true',noticeVersion:c.env.PRODUCT_REPLAY_NOTICE_VERSION}:{enabled:false}});
   });
   app.use('*',async(c,next)=>{
     if(c.req.method!=='POST')return next();

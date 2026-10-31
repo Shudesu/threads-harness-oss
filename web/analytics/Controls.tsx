@@ -20,8 +20,8 @@ export function TenantAnalytics({path,api,apiOrigin,showSettings=false}:{path:st
   if(!showSettings||!preference?.enabled)return null;
   return <details style={{margin:'1rem 0',padding:'0.75rem',fontSize:'0.875rem'}}>
     <summary>利用状況の計測 / Usage analytics — {preference.choice==='off'||preference.privacySignal?'停止中 / Off':'計測中 / On'}</summary>
-    <p>画面の種類、主要な操作、API応答・時間区分をサービス改善のためPostHogへ送信します。会話本文・顧客名・入力内容・画像・URL・APIキー・画面録画は送りません。停止しても機能は変わりません。</p>
-    <p>We measure screen categories, explicit actions, API outcomes and duration buckets. No conversation text, customer names, input values, images, URLs, keys or recordings are collected. Stopping does not affect features.</p>
+    <p>画面の種類、主要な操作、API応答・時間区分をサービス改善のためPostHogへ送信します。録画の説明を含む版に同意済みの環境では、本文・顧客名・入力値・画像・実URL・APIキーを伏せた画面配置・クリック・スクロールも再生用に記録します。停止しても機能は変わりません。</p>
+    <p>We measure screen categories, explicit actions, API outcomes and duration buckets. For environments covered by the replay notice, masked page layouts, clicks and scrolling are also recorded. Conversation text, customer names, input values, images, real URLs and keys are hidden. Stopping does not affect features.</p>
     <a href="https://theharness.cloud/product-analytics/privacy" target="_blank" rel="noreferrer">送信先・保存・停止について / Privacy details</a>
     {preference.privacySignal&&<p>ブラウザのプライバシー設定により停止しています。 / Disabled by your browser privacy signal.</p>}
     <div style={{display:'flex',gap:'0.75rem',marginTop:'0.75rem'}}>

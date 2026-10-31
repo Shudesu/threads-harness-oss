@@ -14,3 +14,5 @@ __pycache__/
 !.dev.vars.example
 .env.*
 !.env.example
+
+scripts/session-replay/dist/

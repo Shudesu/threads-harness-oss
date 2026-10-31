@@ -1,3 +1,4 @@
+import {createReplaySession,type ReplayConfiguration} from './replay-client';
 import { ACTIONS, screenForPath, operationForPath, type Event, type Screen, type Action } from './contract';
 export type Preferences={enabled:boolean;choice:'unset'|'on'|'off';privacySignal:boolean};
 export type AnalyticsApi=<T>(path:string,options?:RequestInit)=>Promise<{success:boolean;data:T}>;
@@ -9,7 +10,8 @@ export function createTenantTracker({api,apiOrigin,onPreference}:Options){
   let active=false,disposed=false,current:Screen|null=null,queue:Array<{event:Event;at:number}>=[],timer:ReturnType<typeof setTimeout>|undefined;
   let started:number|null=null;let foreground=0,eventsThisMinute=0,minute=Date.now();
   const originalFetch=window.fetch;
-  const announce=(p:Preferences)=>{active=p.enabled&&p.choice!=='off'&&!p.privacySignal&&!offByBrowser();if(!active){queue=[];foreground=0;started=null;}onPreference?.(p);};
+  const replay=createReplaySession(async()=>{const r=await api<ReplayConfiguration>('/api/product-analytics/replay-config');return r.success?r.data:null;},(location.pathname==='/console'||location.pathname.startsWith('/console/'))?'/console/harness-replay-v1.js':'/harness-replay-v1.js');
+  const announce=(p:Preferences)=>{active=p.enabled&&p.choice!=='off'&&!p.privacySignal&&!offByBrowser();if(!active){queue=[];foreground=0;started=null;}replay.setEnabled(active);onPreference?.(p);};
   function emit(event:Event){
     if(!active||disposed||offByBrowser())return;
     if(Date.now()-minute>=60000){minute=Date.now();eventsThisMinute=0;}
@@ -33,7 +35,7 @@ export function createTenantTracker({api,apiOrigin,onPreference}:Options){
   function setScreen(path:string){
     const next=screenForPath(path);
     if(next===current)return;
-    leave();current=next;
+    leave();current=next;replay.setScreen(next);
     if(current){emit({kind:'screen',screen:current});started=active&&document.visibilityState==='visible'?performance.now():null;}
   }
   function action(action:Action){if(current&&ACTIONS.includes(action))emit({kind:'action',screen:current,action});}
@@ -91,14 +93,14 @@ export function createTenantTracker({api,apiOrigin,onPreference}:Options){
   return {ready,setScreen,action,flush,
     async choose(choice:'on'|'off'){
       // Stop locally before awaiting a network response. Failure cannot keep collecting after a stop click.
-      if(choice==='off'){active=false;queue=[];started=null;foreground=0;}
+      if(choice==='off'){replay.setEnabled(false);active=false;queue=[];started=null;foreground=0;}
       const r=await api<Preferences>('/api/product-analytics/preferences',{method:'POST',body:JSON.stringify({choice})});
       if(!r.success)throw new Error('analytics_preference_failed');
       if(!disposed){announce(r.data);if(active&&current){emit({kind:'screen',screen:current});started=document.visibilityState==='visible'?performance.now():null;}}
       return r.data;
     },
     dispose(){
-      leave();void flush();disposed=true;clearTimeout(timer);
+      replay.dispose();leave();void flush();disposed=true;clearTimeout(timer);
       if(window.fetch===wrappedFetch)window.fetch=originalFetch;
       document.removeEventListener('click',interact,true);document.removeEventListener('change',interact,true);document.removeEventListener('focusin',interact,true);
       document.removeEventListener('visibilitychange',visibility);window.removeEventListener('pagehide',pagehide);

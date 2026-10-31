@@ -3591,6 +3591,19 @@
           }
         }
       }
+    },
+    "/api/product-analytics/replay-config": {
+      "get": {
+        "summary": "Authenticated masked replay configuration, gated by notice and preference",
+        "responses": {
+          "200": {
+            "description": "Disabled state or public replay configuration"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
     }
   }
 }
