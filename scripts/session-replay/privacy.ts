@@ -44,7 +44,7 @@ export function createPrivacy(){
   function node(raw:unknown,depth=0):Obj|null{
     if(!record(raw)||depth>100||!Number.isInteger(raw.id))return null;
     const common={id:raw.id,type:raw.type};
-    if(raw.type===0)return {...common,childNodes:Array.isArray(raw.childNodes)?raw.childNodes.map(n=>node(n,depth+1)).filter(Boolean):[]};
+    if(raw.type===0)return {...common,compatMode:raw.compatMode==='BackCompat'?'BackCompat':'CSS1Compat',childNodes:Array.isArray(raw.childNodes)?raw.childNodes.map(n=>node(n,depth+1)).filter(Boolean):[]};
     if(raw.type===1)return {...common,name:'html',publicId:'',systemId:''};
     if(raw.type===2)return {...common,tagName:tags.has(raw.tagName)?raw.tagName:'div',attributes:attributes(raw.attributes),childNodes:Array.isArray(raw.childNodes)?raw.childNodes.map(n=>node(n,depth+1)).filter(Boolean):[]};
     if(raw.type===3||raw.type===4)return {...common,textContent:mask(raw.textContent)};
@@ -64,7 +64,8 @@ export function createPrivacy(){
       data.texts=Array.isArray(d.texts)?d.texts.filter(record).map(v=>({id:number(v.id),value:mask(v.value)})):[];
       data.attributes=Array.isArray(d.attributes)?d.attributes.filter(record).map(v=>({id:number(v.id),attributes:attributes(v.attributes)})):[];
       data.removes=Array.isArray(d.removes)?d.removes.filter(record).map(v=>numeric(v,['parentId','id'])):[];
-      data.adds=Array.isArray(d.adds)?d.adds.filter(record).map(v=>({...numeric(v,['parentId','nextId']),node:node(v.node)})).filter(v=>v.node):[];
+      data.adds=Array.isArray(d.adds)?d.adds.filter(record).map(v=>({...numeric(v,['parentId','nextId']),...(v.nextId===null?{nextId:null}:{}),node:node(v.node)})).filter(v=>v.node):[];
+      if(typeof d.isAttachIframe==='boolean')data.isAttachIframe=d.isAttachIframe;
     } else if([1,6,12].includes(d.source))data.positions=Array.isArray(d.positions)?d.positions.filter(record).map(v=>numeric(v,['x','y','id','timeOffset'])):[];
     else if([2,3,4].includes(d.source))Object.assign(data,numeric(d,['type','id','x','y','width','height']));
     else if(d.source===5)Object.assign(data,{id:number(d.id),text:mask(d.text),isChecked:!!d.isChecked});

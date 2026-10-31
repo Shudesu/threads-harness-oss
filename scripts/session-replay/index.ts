@@ -1,4 +1,4 @@
-import posthog from 'posthog-js/full/no-external';
+import posthog, {type PostHog,type PostHogConfig} from 'posthog-js/full/no-external';
 import {createPrivacy} from './privacy';
 export type ReplayConfig={enabled:boolean;token:string;host:string;distinctId:string;product:'cloud'|'line'|'x'|'ig'|'threads';internal:boolean;noticeVersion:string};
 const screens=new Set('workspaces workspace_new overview connections agent line_accounts campaigns apps coupon collection x_research dashboard chats friends posts compose schedule insights accounts settings integrations broadcasts scenarios tags forms media rich_messages rich_menus staff webinars bookings automation personal_line replies quotes growth notifications templates reminders scoring affiliates conversions health updates users pools webhooks events'.split(' '));
@@ -6,6 +6,7 @@ const signal=()=>navigator.doNotTrack==='1'||(navigator as Navigator&{globalPriv
 type Controller={setScreen:(screen:string|null)=>void;stop:()=>void};
 let active:Controller|undefined;
 let generation=0;
+let instance:PostHog|undefined,connection='';
 export function start(config:ReplayConfig,initialScreen:string):Controller|undefined{
   active?.stop();
   if(!config.enabled||signal()||config.noticeVersion!=='2026-11-01.3'||!['https://us.i.posthog.com','https://eu.i.posthog.com'].includes(config.host)||!/^phc_[\w-]{10,200}$/.test(config.token)||!/^(?:tenant|thc)_[a-f0-9]{64}$/.test(config.distinctId)||!['cloud','line','x','ig','threads'].includes(config.product))return undefined;
@@ -14,7 +15,7 @@ export function start(config:ReplayConfig,initialScreen:string):Controller|undef
   // SDK config and ingestion requests must not carry the tenant URL as a Referer.
   const referrer=document.createElement('meta');referrer.name='referrer';referrer.content='no-referrer';document.head.append(referrer);
   const href=()=>`https://harness.invalid/${config.product}/${screen??'unknown'}`;
-  const client=posthog.init(config.token,{
+  const options:Partial<PostHogConfig>={
     api_host:config.host,defaults:'2026-08-30',persistence:'memory',person_profiles:'never',
     bootstrap:{distinctID:config.distinctId,isIdentifiedID:false},
     ip:false,save_referrer:false,capture_exceptions:false,
@@ -22,7 +23,7 @@ export function start(config:ReplayConfig,initialScreen:string):Controller|undef
     capture_dead_clicks:false,capture_performance:false,enable_recording_console_log:false,
     disable_surveys:true,disable_product_tours:true,disable_conversations:true,
     disable_external_dependency_loading:true,advanced_disable_feature_flags:true,
-    disable_session_recording:!screen,
+    disable_session_recording:true,
     session_recording:{
       maskAllInputs:true,maskTextSelector:'*',maskTextFn:()=> '••••',maskInputFn:()=> '••••',
       maskAttributeFn:privacy.attribute,
@@ -31,7 +32,7 @@ export function start(config:ReplayConfig,initialScreen:string):Controller|undef
       recordHeaders:false,recordBody:false,compress_events:false,
       // The callback also handles replay Meta events. Returning null can drop the
       // initial viewport/URL frame, so retain the shape with a fixed synthetic URL.
-      maskNetworkRequestFn:data=>({...data,name:href()}),
+      maskCapturedNetworkRequestFn:data=>({...data,name:href()}),
       canvasCapture:{maskRegionsFn:()=>null},
     },
     before_send:event=>{
@@ -50,8 +51,15 @@ export function start(config:ReplayConfig,initialScreen:string):Controller|undef
       }
       return {event:event.event,uuid:event.uuid,timestamp:event.timestamp,properties};
     },
-  },'harness_masked_replay_'+(++generation));
+  };
+  let client:PostHog|undefined;
+  const key=config.host+'|'+config.token;
+  if(instance&&connection===key){instance.reset();instance.set_config(options);client=instance;}
+  else {client=posthog.init(config.token,options,'harness_masked_replay_'+(++generation));instance=client;connection=key;}
   if(!client)return undefined;
+  // Authenticated server preference is authoritative. A previous local lifecycle
+  // stop must not make a permitted new mount permanently opt out of this SDK.
+  client.opt_in_capturing({captureEventName:false});
   function setScreen(next:string|null){
     screen=next&&screens.has(next)?next:null;
     if(!screen||stopped||signal()){client!.stopSessionRecording();return;}
