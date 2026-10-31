@@ -29,7 +29,9 @@ export function start(config:ReplayConfig,initialScreen:string):Controller|undef
       blockSelector:'img,svg,canvas,video,audio,iframe,object,embed,input[type="hidden"],input[type="file"],script,style,[data-replay-private]',
       recordCrossOriginIframes:false,collectFonts:false,captureJsonLd:false,
       recordHeaders:false,recordBody:false,compress_events:false,
-      maskNetworkRequestFn:data=>'isInitial' in data&&data.isInitial===true?{...data,name:href()}:null,
+      // The callback also handles replay Meta events. Returning null can drop the
+      // initial viewport/URL frame, so retain the shape with a fixed synthetic URL.
+      maskNetworkRequestFn:data=>({...data,name:href()}),
       canvasCapture:{maskRegionsFn:()=>null},
     },
     before_send:event=>{

@@ -40,6 +40,7 @@ test('actual SDK masks full snapshots and mutations before any ingestion request
  const all=JSON.stringify(payloads);
  const events=payloads.flatMap(p=>{const parsed=JSON.parse(p);return Array.isArray(parsed)?parsed:parsed.batch??[parsed];});
  const snapshots=events.filter(e=>e.event==='$snapshot').flatMap(e=>e.properties.$snapshot_data);
+ assert.ok(snapshots.some(s=>s.type===4&&s.data.href==='https://harness.invalid/line/chats'),'initial viewport and safe URL metadata retained');
  assert.ok(snapshots.some(s=>s.type===2),'full snapshot retained');
  assert.ok(snapshots.some(s=>s.type===3&&s.data.source===0),'DOM mutations retained');
  assert.ok(snapshots.some(s=>s.type===3&&s.data.source===5),'masked input interaction retained');
