@@ -17,7 +17,7 @@ export function createTenantTracker({api,apiOrigin,onPreference}:Options){
     if(Date.now()-minute>=60000){minute=Date.now();eventsThisMinute=0;}
     if(++eventsThisMinute>120||queue.length>=20)return;
     queue.push({event,at:performance.now()});
-    if(!timer)timer=setTimeout(()=>void flush(),2000);
+    if(!timer)timer=setTimeout(()=>void flush(),10000);
   }
   async function flush(){
     clearTimeout(timer);timer=undefined;
@@ -61,6 +61,7 @@ export function createTenantTracker({api,apiOrigin,onPreference}:Options){
   const pagehide=()=>{leave();void flush();};
   const wrappedFetch:typeof fetch=async(input,init)=>{
     const screen=current;
+    const observedInForeground=document.visibilityState==='visible';
     let operation:ReturnType<typeof operationForPath>=null;
     try{
       const url=new URL(typeof input==='string'?input:input instanceof URL?input.href:input.url,location.href);
@@ -69,13 +70,13 @@ export function createTenantTracker({api,apiOrigin,onPreference}:Options){
     const start=performance.now();
     try{
       const result=await originalFetch.call(window,input,init);
-      if(screen&&operation&&((result.status>=200&&result.status<300)||result.status>=400)){
+      if(observedInForeground&&screen&&operation&&((result.status>=200&&result.status<300)||result.status>=400)){
         const ms=performance.now()-start;
         emit({kind:'operation',screen,operation,status:result.status,outcome:result.status<300?'accepted':result.status<500?'rejected':'server_error',duration:ms<1000?'under_1s':ms<5000?'1_to_5s':'over_5s'});
       }
       return result;
     }catch(error){
-      if(screen&&operation)emit({kind:'operation',screen,operation,status:0,outcome:'network_error',duration:performance.now()-start<1000?'under_1s':performance.now()-start<5000?'1_to_5s':'over_5s'});
+      if(observedInForeground&&screen&&operation)emit({kind:'operation',screen,operation,status:0,outcome:'network_error',duration:performance.now()-start<1000?'under_1s':performance.now()-start<5000?'1_to_5s':'over_5s'});
       throw error;
     }
   };
