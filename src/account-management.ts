@@ -87,7 +87,8 @@ async function classify(db: D1Database, request: MgmtRequest): Promise<MgmtError
   if (!row) return new MgmtError('account_not_found', 404);
   if (row.id !== request.expectedSubject) return new MgmtError('subject_mismatch', 409);
   if (String(row.mgmt_revision) !== request.expectedRevision) return new MgmtError('revision_conflict', 409);
-  return new MgmtError('revision_conflict', 409);
+  // Account, subject and revision still match: the failure was storage/service, not stale state.
+  return new MgmtError('internal_error', 500);
 }
 
 async function verified(verify: IdentityVerifier, token: string, env: Env, expectedSubject: string) {
@@ -167,7 +168,12 @@ export function accountManagementRoutes(verify: IdentityVerifier) {
     if (request.action === 'create') {
       const subject = request.expectedSubject;
       // Cheap pre-check before any network call; the INSERT below is the real guard.
-      if (await db.prepare('SELECT id FROM threads_accounts WHERE id=?').bind(subject).first()) throw new MgmtError('account_exists', 409);
+      if (await db.prepare('SELECT id FROM threads_accounts WHERE id=?').bind(subject).first()) {
+        // An identical create may have just committed: replay it rather than reporting a duplicate.
+        const raced = await replay();
+        if (raced) return raced;
+        throw new MgmtError('account_exists', 409);
+      }
       const token = (request.input.accessToken as string).trim();
       const identity = await verified(verify, token, c.env, subject);
       const cipher = await seal(token, c.env.TOKEN_ENCRYPTION_KEY);

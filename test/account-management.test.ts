@@ -283,6 +283,12 @@ describe('account-mgmt/v1 CAS and receipts', () => {
     expect(response.status).toBe(422);
     expect((await response.json()).error).toBe('credential_invalid');
   });
+  it('reports a storage failure with a matching revision as an internal error, not a conflict', async () => {
+    env.DB.batch = async () => { throw new Error('D1_ERROR: storage unavailable'); };
+    const response = await operation(op('update_settings', { name: 'x' }));
+    expect(response.status).toBe(500);
+    expect((await response.json()).error).toBe('internal_error');
+  });
   it('gives a deleted and recreated account a new revision (ABA)', async () => {
     const original = revision();
     sqlite.prepare("DELETE FROM threads_posts").run();
