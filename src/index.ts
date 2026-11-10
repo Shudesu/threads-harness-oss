@@ -4,6 +4,7 @@ import { Hono, type Context } from 'hono';
 import openapi from '../openapi.json';
 import { ThreadsApi, ThreadsError, validateEncryptionKey, seal, unseal } from './threads';
 import { adminSso } from './admin-sso';
+import { accountManagementRoutes } from './account-management';
 
 export interface Bindings extends AnalyticsBindings {
   DB: D1Database; ASSETS: Fetcher; API_KEY: string; TOKEN_ENCRYPTION_KEY: string;
@@ -36,6 +37,8 @@ async function verifyConnection(token: string, env: Bindings) {
     throw new ThreadsError('connection_check_failed', 'Threadsの接続確認が完了しませんでした。通信状態を確認して再度お試しください。');
   }
 }
+/** Threads /me identity lookup, injectable so tests never reach Meta. */
+export const accountIdentity = { verify: verifyConnection };
 async function recordAccountFailure(env: Bindings, id: string, cipher: string, error: unknown) {
   if (!(error instanceof ThreadsError)) return;
   // A late error from the previous token must not invalidate a reconnect.
@@ -57,6 +60,7 @@ app.use('/api/*', async (c, next) => {
   c.header('Cache-Control', 'no-store');
   return next();
 });
+app.route('/api/account-management/v1', accountManagementRoutes((token, env) => accountIdentity.verify(token, env)));
 app.route('/api/product-analytics', tenantAnalyticsRoutes<{Bindings:Bindings}>('threads', () => ({id:'workspace-owner',role:'owner'})));
 app.get('/api/health', async c => {
   let encryptionKey = true;
@@ -65,9 +69,9 @@ app.get('/api/health', async c => {
   try {
     const columns = (await c.env.DB.prepare('PRAGMA table_info(threads_accounts)').all<{ name: string }>()).results;
     const posts = (await c.env.DB.prepare('PRAGMA table_info(threads_posts)').all<{ name: string }>()).results;
-    migrations = ['token_expires_at', 'data_access_expires_at', 'permissions_checked_at', 'last_error_code', 'queue_paused', 'last_error_kind'].every(name => columns.some(column => column.name === name)) && ['scheduler_key', 'error_kind', 'next_attempt_at', 'status_check_count', 'shares', 'media_json', 'media_children_json'].every(name => posts.some(column => column.name === name));
-    const sso = await c.env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='admin_sso_jti'").first();
-    migrations = migrations && Boolean(sso);
+    migrations = ['token_expires_at', 'data_access_expires_at', 'permissions_checked_at', 'last_error_code', 'queue_paused', 'last_error_kind', 'mgmt_revision', 'is_active', 'display_name'].every(name => columns.some(column => column.name === name)) && ['scheduler_key', 'error_kind', 'next_attempt_at', 'status_check_count', 'shares', 'media_json', 'media_children_json'].every(name => posts.some(column => column.name === name));
+    const tables = (await c.env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('admin_sso_jti','account_mgmt_receipts','account_mgmt_sequence')").all<{ name: string }>()).results;
+    migrations = migrations && tables.length === 3;
     accounts = (await c.env.DB.prepare('SELECT COUNT(*) AS count FROM threads_accounts').first<{ count: number }>())?.count ?? null;
   } catch { /* expose readiness only, never schema errors or credentials */ }
   return c.json(ok({ ready: encryptionKey && migrations, apiKey: Boolean(c.env.API_KEY), encryptionKey, sso: (c.env.ADMIN_SSO_SECRET?.length ?? 0) >= 32, migrations, accounts }));
@@ -82,7 +86,7 @@ app.post('/api/accounts', async c => {
   const accessToken = body?.accessToken;
   if (typeof accessToken !== 'string' || !accessToken.trim() || accessToken.length > 4096) return c.json(fail('Threadsアクセストークンを入力してください'), 400);
   const token = accessToken.trim();
-  const profile = await verifyConnection(token, c.env);
+  const profile = await accountIdentity.verify(token, c.env);
   const cipher = await seal(token, c.env.TOKEN_ENCRYPTION_KEY);
   await c.env.DB.prepare("INSERT INTO threads_accounts (id, username, token_cipher, token_expires_at, data_access_expires_at, permissions_checked_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET username=excluded.username, token_cipher=excluded.token_cipher, status='connected', token_expires_at=excluded.token_expires_at, data_access_expires_at=excluded.data_access_expires_at, permissions_checked_at=excluded.permissions_checked_at, last_error_code=NULL, last_error_kind=NULL, updated_at=excluded.updated_at")
     .bind(profile.id, profile.username, cipher, profile.tokenExpiresAt, profile.dataAccessExpiresAt, now(), now(), now()).run();
@@ -94,7 +98,7 @@ app.post('/api/accounts/:id/check', async c => {
   const account = await c.env.DB.prepare("SELECT token_cipher FROM threads_accounts WHERE id=? AND status!='disconnected'").bind(id).first<{ token_cipher: string }>();
   if (!account?.token_cipher) return c.json(fail('保存済みの接続がありません。トークンを入力してください。'), 409);
   try {
-    const profile = await verifyConnection(await unseal(account.token_cipher, c.env.TOKEN_ENCRYPTION_KEY), c.env);
+    const profile = await accountIdentity.verify(await unseal(account.token_cipher, c.env.TOKEN_ENCRYPTION_KEY), c.env);
     if (profile.id !== id) throw new ThreadsError('token_user_mismatch', 'トークンのユーザー情報が一致しません。', 422);
     const saved = await c.env.DB.prepare("UPDATE threads_accounts SET status='connected', token_expires_at=?, data_access_expires_at=?, permissions_checked_at=?, last_error_code=NULL, last_error_kind=NULL, updated_at=? WHERE id=? AND token_cipher=?")
       .bind(profile.tokenExpiresAt, profile.dataAccessExpiresAt, now(), now(), id, account.token_cipher).run();
@@ -305,14 +309,15 @@ export class ThreadsPublisher {
         if (!alarm || alarm > Date.now() + 1000) await this.state.storage.setAlarm(Date.now() + 1000);
       };
       if (path === '/resume' && payload) {
-        const account = await this.env.DB.prepare('SELECT status,token_expires_at,data_access_expires_at FROM threads_accounts WHERE id=?').bind(payload.accountId).first<AccountHealth>();
+        const account = await this.env.DB.prepare('SELECT status,is_active,token_expires_at,data_access_expires_at FROM threads_accounts WHERE id=?').bind(payload.accountId).first<AccountHealth & { is_active: number }>();
+        if (account && account.is_active === 0) return Response.json({ ...fail('停止中のアカウントです。有効化してから再開してください。'), code: 'account_inactive' }, { status: 409 });
         if (!account || account.status !== 'connected' || expired(account)) return Response.json(fail('有効なトークンで再接続してください。'), { status: 409 });
         const scope = `account:${payload.accountId}`;
         const priorScope = await this.state.storage.get<string>('scheduler_key');
         if (priorScope && priorScope !== scope) return Response.json(fail('対象アカウントが一致しません'), { status: 409 });
         await this.state.storage.put('scheduler_key', scope);
         await arm();
-        await this.env.DB.prepare("UPDATE threads_accounts SET queue_paused=0, updated_at=? WHERE id=? AND status='connected'").bind(now(), payload.accountId).run();
+        await this.env.DB.prepare("UPDATE threads_accounts SET queue_paused=0, updated_at=? WHERE id=? AND status='connected' AND is_active=1").bind(now(), payload.accountId).run();
         return Response.json(ok({ resumed: true }));
       }
       if (payload) {

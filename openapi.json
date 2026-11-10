@@ -553,6 +553,67 @@
           "nextCursor",
           "hasMore"
         ]
+      },
+      "ManagedAccount": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string",
+            "description": "Threads user id (immutable)"
+          },
+          "revision": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "name": {
+            "type": "string"
+          },
+          "username": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "isActive": {
+            "type": "boolean"
+          },
+          "isDefault": {
+            "type": "boolean"
+          },
+          "needsReauth": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": "string"
+          },
+          "actions": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "update_settings",
+                "deactivate",
+                "activate",
+                "disconnect",
+                "reconnect"
+              ]
+            }
+          }
+        },
+        "required": [
+          "id",
+          "subject",
+          "revision",
+          "name",
+          "username",
+          "isActive",
+          "isDefault",
+          "needsReauth",
+          "status",
+          "actions"
+        ]
       }
     }
   },
@@ -3601,6 +3662,357 @@
           },
           "401": {
             "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/account-management/v1/accounts": {
+      "get": {
+        "operationId": "accountMgmtListAccounts",
+        "summary": "account-mgmt/v1: 管理用アカウント一覧（revision・subject付き、トークン類は含まない）。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "const": true
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "contract": {
+                          "const": "account-mgmt/v1"
+                        },
+                        "accounts": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/ManagedAccount"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "required": [
+                    "success",
+                    "data"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "APIキーが無効",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "処理結果を確認してください",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/account-management/v1/operations": {
+      "post": {
+        "operationId": "accountMgmtOperation",
+        "summary": "account-mgmt/v1: create / reconnect / update_settings / deactivate / activate / disconnect をrevision CASと受領記録で1トランザクション実行。同一operationIdは再実行せず受領記録を返す。",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "operationId": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]{16,128}$"
+                  },
+                  "action": {
+                    "enum": [
+                      "create",
+                      "reconnect",
+                      "update_settings",
+                      "deactivate",
+                      "activate",
+                      "disconnect"
+                    ]
+                  },
+                  "accountId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "expectedRevision": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "expectedSubject": {
+                    "type": "string"
+                  },
+                  "input": {
+                    "type": "object",
+                    "description": "create: {accessToken, name?} / reconnect: {accessToken} / update_settings: {name?, displayName?}（displayNameはnameの別名。両方指定時は同値必須）/ その他: {}"
+                  }
+                },
+                "required": [
+                  "operationId",
+                  "action",
+                  "accountId",
+                  "expectedRevision",
+                  "expectedSubject",
+                  "input"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功または再送",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "const": true
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "contract": {
+                          "const": "account-mgmt/v1"
+                        },
+                        "operationId": {
+                          "type": "string"
+                        },
+                        "action": {
+                          "type": "string"
+                        },
+                        "accountId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "revision": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        }
+                      }
+                    }
+                  },
+                  "required": [
+                    "success",
+                    "data"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request / unsupported_action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "account_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "revision_conflict / subject_mismatch / account_exists / operation_conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "credential_invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "identity_verification_failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "service_not_configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "APIキーが無効",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "処理結果を確認してください",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/account-management/v1/operations/{operationId}": {
+      "get": {
+        "operationId": "accountMgmtReceipt",
+        "summary": "account-mgmt/v1: 受領記録の照会。無ければ効果は未確定ではなく未コミット。",
+        "parameters": [
+          {
+            "name": "operationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "受領記録あり",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "const": true
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "operationId": {
+                          "type": "string"
+                        },
+                        "action": {
+                          "type": "string"
+                        },
+                        "accountId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "revision": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      }
+                    }
+                  },
+                  "required": [
+                    "success",
+                    "data"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "receipt_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "APIキーが無効",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "処理結果を確認してください",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       }

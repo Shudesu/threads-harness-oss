@@ -5,6 +5,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import * as miniflare from 'miniflare';
+import { sqlStatements } from './sql-statements.mjs';
 const root=fileURLToPath(new URL('../',import.meta.url));
 const {outputFiles}=await build({stdin:{contents:`import {app,processPost} from './src/index'; export {ThreadsPublisher} from './src/index'; export default {async fetch(req,env,ctx){const u=new URL(req.url);if(u.pathname==='/__tick'){const p=await env.DB.prepare('SELECT * FROM threads_posts WHERE id=?').bind(u.searchParams.get('id')).first();await processPost(env,p);return Response.json({ok:true});}return app.fetch(req,env,ctx);}};`,resolveDir:root,loader:'ts'},bundle:true,write:false,format:'esm',platform:'browser'});
 const containers=new Map();let nextId=100, publications=0;
@@ -34,7 +35,7 @@ const mf=new miniflare.Miniflare(miniflare.convertV4MiniflareOptions?miniflare.c
 try{
  const db=await mf.getD1Database('DB');
  for(const file of (await readdir(root+'/migrations')).filter(f=>f.endsWith('.sql')).sort()){
-  for(const stmt of (await readFile(root+'/migrations/'+file,'utf8')).replace(/^\s*--[^\n]*/gm,'').split(';').filter(s=>s.trim()))await db.prepare(stmt).run();
+  for(const stmt of sqlStatements(await readFile(root+'/migrations/'+file,'utf8')))await db.prepare(stmt).run();
  }
  const api=(path,method='GET',body)=>mf.dispatchFetch('http://localhost/api'+path,{method,headers:{Authorization:'Bearer fixture-key','Content-Type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)})});
  assert.equal((await api('/accounts','POST',{accessToken:'fixture-token'})).status,201);

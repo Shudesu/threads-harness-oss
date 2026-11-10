@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import * as miniflare from 'miniflare';
+import { sqlStatements } from './sql-statements.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const { outputFiles } = await build({
@@ -23,9 +24,12 @@ const options = {
     outboundCalls++;
     const url = new URL(request.url);
     assert.equal(url.origin, 'https://graph.threads.net');
-    assert.ok(['/v1.0/me', '/v1.0/debug_token', '/v1.0/456/threads_publishing_limit'].includes(url.pathname));
+    assert.ok(['/v1.0/me', '/v1.0/debug_token', '/v1.0/456/threads_publishing_limit', '/v1.0/789/threads_publishing_limit'].includes(url.pathname));
     assert.equal(request.method, 'GET');
-    assert.equal(request.headers.get('Authorization'), 'Bearer fixture-token');
+    // fixture-token-b identifies a second synthetic user (account-mgmt/v1 create).
+    const second = request.headers.get('Authorization') === 'Bearer fixture-token-b';
+    if (!second) assert.equal(request.headers.get('Authorization'), 'Bearer fixture-token');
+    if (second) return url.pathname.endsWith('/me') ? Response.json({ id: '789', username: 'fixture-b' }) : url.pathname.endsWith('/threads_publishing_limit') ? Response.json({ data: [{ quota_usage: 0, config: { quota_total: 250, quota_duration: 86400 } }] }) : Response.json({ data: { type: 'USER', user_id: '789', is_valid: true, scopes: ['threads_basic','threads_content_publish','threads_manage_insights'], expires_at: Math.floor(Date.now()/1000)+3600 } });
     if (url.pathname.endsWith('/threads_publishing_limit') && rejectQuota) return Response.json({ error: { code: 190, message: 'fixture-token must not leak' } }, { status: 400 });
     if (url.pathname.endsWith('/threads_publishing_limit')) return Response.json({ data: [{ quota_usage: 0, config: { quota_total: 250, quota_duration: 86400 } }] });
     return url.pathname.endsWith('/me') ? Response.json({ id: '456', username: 'fixture' }) : Response.json({ data: { type: 'USER', user_id: '456', is_valid: true, scopes: ['threads_basic','threads_content_publish','threads_manage_insights'], expires_at: Math.floor(Date.now()/1000)+3600 } });
@@ -34,9 +38,9 @@ const options = {
 const mf = new miniflare.Miniflare(miniflare.convertV4MiniflareOptions ? miniflare.convertV4MiniflareOptions(options) : options);
 try {
   const db = await mf.getD1Database('DB');
-  for (const file of ['0001_initial.sql', '0002_admin_sso.sql', '0003_chains_insights.sql', '0004_connection_health.sql', '0005_account_schedulers.sql', '0006_publication_safety.sql', '0007_media.sql']) {
+  for (const file of ['0001_initial.sql', '0002_admin_sso.sql', '0003_chains_insights.sql', '0004_connection_health.sql', '0005_account_schedulers.sql', '0006_publication_safety.sql', '0007_media.sql', '0008_account_management.sql']) {
     const sql = await readFile(new URL(`../migrations/${file}`, import.meta.url), 'utf8');
-    for (const statement of sql.replace(/^\s*--[^\n]*/gm, '').split(';').filter(s => s.trim())) await db.prepare(statement).run();
+    for (const statement of sqlStatements(sql)) await db.prepare(statement).run();
   }
   const request = (path, method = 'GET', body) => mf.dispatchFetch(`http://localhost/api${path}`, {
     method, headers: { Authorization: 'Bearer fixture-workspace-key', 'Content-Type': 'application/json' },
@@ -108,6 +112,37 @@ try {
   const secondPage = await (await request('/posts?accountId=456&limit=2&cursor='+encodeURIComponent(firstPage.pagination.nextCursor))).json();
   assert.equal(new Set([...firstPage.data,...secondPage.data].map(p=>p.id)).size,4);
   assert.equal(secondPage.pagination.nextCursor,null);
+  // account-mgmt/v1 on real workerd D1: triggers, batch CAS + receipt, create-only.
+  const mgmt = (path, method = 'GET', body) => request(`/account-management/v1${path}`, method, body);
+  const listed = async () => (await (await mgmt('/accounts')).json()).data.accounts;
+  let fixture = (await listed()).find(a => a.id === '456');
+  assert.ok(Number(fixture.revision) > 0);
+  assert.ok(!JSON.stringify(await listed()).includes('fixture-token'));
+  const op = (operationId, action, accountId, expectedRevision, expectedSubject, input = {}) => mgmt('/operations', 'POST', { operationId, action, accountId, expectedRevision, expectedSubject, input });
+  const renamed = await op('workerd-op-rename-0001', 'update_settings', '456', fixture.revision, '456', { name: 'Fixture label' });
+  assert.equal(renamed.status, 200);
+  const renamedBody = (await renamed.json()).data;
+  assert.ok(Number(renamedBody.revision) > Number(fixture.revision));
+  assert.equal((await (await op('workerd-op-rename-0001', 'update_settings', '456', fixture.revision, '456', { name: 'Fixture label' })).json()).data.replayed, true);
+  assert.equal((await op('workerd-op-stale-0001', 'deactivate', '456', fixture.revision, '456')).status, 409);
+  assert.equal((await mgmt('/operations/workerd-op-stale-0001')).status, 404);
+  assert.equal((await (await mgmt('/operations/workerd-op-rename-0001')).json()).data.revision, renamedBody.revision);
+  assert.equal((await op('workerd-op-exists-0001', 'create', null, null, '456', { accessToken: 'fixture-token' })).status, 409);
+  const callsBeforeCreate = outboundCalls;
+  const createdB = await op('workerd-op-create-0001', 'create', null, null, '789', { accessToken: 'fixture-token-b', name: 'Second' });
+  assert.equal(createdB.status, 200);
+  assert.equal(outboundCalls - callsBeforeCreate, 3);
+  const cipherB = await db.prepare('SELECT token_cipher FROM threads_accounts WHERE id=?').bind('789').first('token_cipher');
+  assert.ok(typeof cipherB === 'string' && !cipherB.includes('fixture-token-b'));
+  const receiptRow = await db.prepare('SELECT * FROM account_mgmt_receipts WHERE operation_id=?').bind('workerd-op-create-0001').first();
+  assert.ok(!JSON.stringify(receiptRow).includes('fixture-token-b'));
+  assert.equal(String(receiptRow.result_revision), (await createdB.json()).data.revision);
+  fixture = (await listed()).find(a => a.id === '456');
+  assert.equal((await request('/accounts/456/disconnect', 'POST', {})).status, 200);
+  const afterLegacy = (await listed()).find(a => a.id === '456');
+  assert.ok(Number(afterLegacy.revision) > Number(fixture.revision));
+  assert.equal(afterLegacy.status, 'disconnected');
+  console.log(JSON.stringify({ accountMgmt: { revisionBumps: true, replay: true, casConflict: 409, createOnly: 409, created: createdB.status, legacyBump: true } }));
   console.log(JSON.stringify({ connectionStatus: connected.status, accounts: 1, draftStatus: draft.status, drafts: 1, mediaDrafts, mediaQueueAndCancel: mediaDrafts, overview: true, durableObjectQueueStatus: queued.status, preservedErrorKind: denied.kind, outboundReadOnlyChecks: outboundCalls, publications: 0 }));
 } finally {
   await mf.dispose();

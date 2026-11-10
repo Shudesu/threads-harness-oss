@@ -23,6 +23,7 @@ beforeEach(async () => {
   sqlite.exec(readFileSync(new URL('../migrations/0005_account_schedulers.sql', import.meta.url), 'utf8'));
   sqlite.exec(readFileSync(new URL('../migrations/0006_publication_safety.sql', import.meta.url), 'utf8'));
   sqlite.exec(readFileSync(new URL('../migrations/0007_media.sql', import.meta.url), 'utf8'));
+  sqlite.exec(readFileSync(new URL('../migrations/0008_account_management.sql', import.meta.url), 'utf8'));
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
     if (String(url).includes('/threads_publishing_limit')) return Response.json({ data: [{ quota_usage: 0, config: { quota_total: 250, quota_duration: 86400 }, reply_quota_usage: 0, reply_config: { quota_total: 1000, quota_duration: 86400 } }] });
     throw new Error('Unexpected external request in test');
