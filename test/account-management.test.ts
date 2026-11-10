@@ -266,6 +266,23 @@ describe('account-mgmt/v1 CAS and receipts', () => {
     expect(account().display_name).toBeNull();
     expect((await mgmt(`/operations/${body.operationId}`)).status).toBe(404);
   });
+  it('replays an identical request that committed concurrently instead of reporting a conflict', async () => {
+    const body = op('update_settings', { name: 'twin' });
+    const batch = env.DB.batch;
+    let first = true;
+    // The twin request commits between this request's receipt lookup and its batch.
+    env.DB.batch = async (statements: any[]) => { if (first) { first = false; env.DB.batch = batch; expect((await operation(body)).status).toBe(200); } return batch(statements); };
+    const response = await operation(body);
+    expect(response.status).toBe(200);
+    expect((await response.json()).data.replayed).toBe(true);
+    expect(sqlite.prepare('SELECT COUNT(*) AS n FROM account_mgmt_receipts').get()).toEqual({ n: 1 });
+  });
+  it('classifies a permission-denied verification as correctable credential input (422)', async () => {
+    vi.spyOn(accountIdentity, 'verify').mockRejectedValue(new ThreadsError('threads_meta_10', 'perm', 502, 10));
+    const response = await operation({ operationId: opId(), action: 'create', accountId: null, expectedRevision: null, expectedSubject: '456', input: { accessToken: 'bad-token' } });
+    expect(response.status).toBe(422);
+    expect((await response.json()).error).toBe('credential_invalid');
+  });
   it('gives a deleted and recreated account a new revision (ABA)', async () => {
     const original = revision();
     sqlite.prepare("DELETE FROM threads_posts").run();

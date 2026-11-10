@@ -94,7 +94,11 @@ async function verified(verify: IdentityVerifier, token: string, env: Env, expec
   let identity: VerifiedIdentity;
   try { identity = await verify(token, env); }
   catch (error) {
-    if (error instanceof ThreadsError) throw new MgmtError(error.kind === 'token_invalid' || error.kind === 'permission_denied' || error.code === 'missing_permissions' || error.code === 'token_user_mismatch' ? 'credential_invalid' : 'identity_verification_failed', error.status === 422 ? 422 : 502);
+    if (error instanceof ThreadsError) {
+      // Status follows the mapped category: correctable credential input → 422, service failure → 502.
+      const credential = error.kind === 'token_invalid' || error.kind === 'permission_denied' || error.code === 'missing_permissions' || error.code === 'token_user_mismatch';
+      throw new MgmtError(credential ? 'credential_invalid' : 'identity_verification_failed', credential ? 422 : 502);
+    }
     throw new MgmtError('identity_verification_failed', 502);
   }
   if (identity.id !== expectedSubject) throw new MgmtError('subject_mismatch', 409);
@@ -149,7 +153,12 @@ export function accountManagementRoutes(verify: IdentityVerifier) {
         if (raced) return raced;
         throw await onEmpty();
       }
-      if (!results[0]?.meta.changes) throw await onEmpty();
+      if (!results[0]?.meta.changes) {
+        // An identical concurrent request may have committed first: replay it, not a conflict.
+        const raced = await replay();
+        if (raced) return raced;
+        throw await onEmpty();
+      }
       const receipt = await receiptLookup(db, request.operationId);
       if (!receipt) throw new MgmtError('internal_error', 500);
       return c.json(success(receipt, false));
@@ -176,7 +185,11 @@ export function accountManagementRoutes(verify: IdentityVerifier) {
     const expectedRevision = Number(request.expectedRevision);
     // Fail fast before any network call; the batch predicate still guards the write.
     const current = await db.prepare('SELECT id, mgmt_revision FROM threads_accounts WHERE id=?').bind(accountId).first<{ id: string; mgmt_revision: number }>();
-    if (!current || current.id !== request.expectedSubject || current.mgmt_revision !== expectedRevision) throw await classify(db, request);
+    if (!current || current.id !== request.expectedSubject || current.mgmt_revision !== expectedRevision) {
+      const raced = await replay();
+      if (raced) return raced;
+      throw await classify(db, request);
+    }
 
     let change: D1PreparedStatement;
     const guard = 'WHERE id=? AND mgmt_revision=? AND id=?';
