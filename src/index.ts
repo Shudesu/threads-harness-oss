@@ -77,7 +77,7 @@ app.get('/api/health', async c => {
   return c.json(ok({ ready: encryptionKey && migrations, apiKey: Boolean(c.env.API_KEY), encryptionKey, sso: (c.env.ADMIN_SSO_SECRET?.length ?? 0) >= 32, migrations, accounts }));
 });
 app.get('/api/accounts', async c => {
-  const rows = (await c.env.DB.prepare("SELECT id, username, status, queue_paused, token_expires_at, data_access_expires_at, permissions_checked_at, last_error_code, last_error_kind, created_at, updated_at, (SELECT COUNT(*) FROM threads_posts p WHERE p.account_id=threads_accounts.id AND p.status IN ('queued','creating','processing','publishing')) AS pending_count FROM threads_accounts ORDER BY created_at DESC").all<AccountHealth>()).results;
+  const rows = (await c.env.DB.prepare("SELECT id, username, status, is_active, is_default, queue_paused, token_expires_at, data_access_expires_at, permissions_checked_at, last_error_code, last_error_kind, created_at, updated_at, (SELECT COUNT(*) FROM threads_posts p WHERE p.account_id=threads_accounts.id AND p.status IN ('queued','creating','processing','publishing')) AS pending_count FROM threads_accounts ORDER BY created_at DESC").all<AccountHealth>()).results;
   return c.json(ok(rows.map(row => ({ ...row, status: row.status === 'connected' && expired(row) ? 'expired' : row.status }))));
 });
 app.post('/api/accounts', async c => {

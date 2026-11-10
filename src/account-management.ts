@@ -11,9 +11,9 @@ export type VerifiedIdentity = { id: string; username: string; tokenExpiresAt: s
 type Env = { DB: D1Database; TOKEN_ENCRYPTION_KEY: string };
 export type IdentityVerifier = (token: string, env: any) => Promise<VerifiedIdentity>;
 
-const ACTIONS = ['create', 'reconnect', 'update_settings', 'deactivate', 'activate', 'disconnect'] as const;
+const ACTIONS = ['create', 'reconnect', 'update_settings', 'deactivate', 'activate', 'set_default', 'disconnect'] as const;
 type Action = typeof ACTIONS[number];
-const KNOWN_UNSUPPORTED = new Set(['set_default', 'resume', 'delete']);
+const KNOWN_UNSUPPORTED = new Set(['resume', 'delete']);
 const INPUT_KEYS: Record<Action, { required: string[]; optional: string[] }> = {
   create: { required: ['accessToken'], optional: ['name'] },
   reconnect: { required: ['accessToken'], optional: [] },
@@ -21,6 +21,7 @@ const INPUT_KEYS: Record<Action, { required: string[]; optional: string[] }> = {
   update_settings: { required: [], optional: ['name', 'displayName'] },
   deactivate: { required: [], optional: [] },
   activate: { required: [], optional: [] },
+  set_default: { required: [], optional: [] },
   disconnect: { required: [], optional: [] },
 };
 const BODY_KEYS = ['operationId', 'action', 'accountId', 'expectedRevision', 'expectedSubject', 'input'];
@@ -35,7 +36,7 @@ const failure = (c: Context, code: string, status: number) => c.json({ success: 
 const iso = () => new Date().toISOString();
 const plainObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 
-type Row = { id: string; username: string; display_name: string | null; status: string; is_active: number; queue_paused: number; token_cipher: string | null; mgmt_revision: number; token_expires_at: string | null; data_access_expires_at: string | null };
+type Row = { id: string; username: string; display_name: string | null; status: string; is_active: number; is_default: number; queue_paused: number; token_cipher: string | null; mgmt_revision: number; token_expires_at: string | null; data_access_expires_at: string | null };
 type MgmtRequest = { operationId: string; action: Action; accountId: string | null; expectedRevision: string | null; expectedSubject: string; input: Record<string, unknown> };
 
 function parseRequest(body: unknown): MgmtRequest {
@@ -73,9 +74,15 @@ const expired = (row: Row) => [row.token_expires_at, row.data_access_expires_at]
 function present(row: Row) {
   const status = row.status === 'connected' && expired(row) ? 'expired' : row.status;
   const active = row.is_active === 1;
-  const actions = ['update_settings', active ? 'deactivate' : 'activate', ...(row.token_cipher ? ['disconnect'] : []), 'reconnect'];
+  const connected = Boolean(row.token_cipher && status === 'connected');
+  const actions = ['update_settings'];
+  if (active) actions.push('deactivate');
+  else if (connected) actions.push('activate');
+  if (active && connected && !row.is_default) actions.push('set_default');
+  if (row.token_cipher) actions.push('disconnect');
+  actions.push('reconnect');
   return { id: row.id, subject: row.id, revision: String(row.mgmt_revision), name: row.display_name ?? row.username, username: row.username,
-    isActive: active, isDefault: false, needsReauth: !row.token_cipher || status !== 'connected', status, actions };
+    isActive: active, isDefault: Boolean(active && connected && row.is_default), needsReauth: !row.token_cipher || status !== 'connected', status, actions };
 }
 
 type Receipt = { operation_id: string; request_fingerprint: string; action: string; account_id: string | null; result_revision: number | null };
@@ -116,7 +123,7 @@ export function accountManagementRoutes(verify: IdentityVerifier) {
   });
 
   routes.get('/accounts', async c => {
-    const rows = (await c.env.DB.prepare('SELECT id, username, display_name, status, is_active, queue_paused, token_cipher, mgmt_revision, token_expires_at, data_access_expires_at FROM threads_accounts ORDER BY created_at DESC, id').all<Row>()).results;
+    const rows = (await c.env.DB.prepare('SELECT id, username, display_name, status, is_active, is_default, queue_paused, token_cipher, mgmt_revision, token_expires_at, data_access_expires_at FROM threads_accounts ORDER BY created_at DESC, id').all<Row>()).results;
     return c.json({ success: true, data: { contract: CONTRACT, accounts: rows.map(present) } });
   });
 
@@ -190,7 +197,7 @@ export function accountManagementRoutes(verify: IdentityVerifier) {
     const accountId = request.accountId as string;
     const expectedRevision = Number(request.expectedRevision);
     // Fail fast before any network call; the batch predicate still guards the write.
-    const current = await db.prepare('SELECT id, mgmt_revision FROM threads_accounts WHERE id=?').bind(accountId).first<{ id: string; mgmt_revision: number }>();
+    const current = await db.prepare('SELECT * FROM threads_accounts WHERE id=?').bind(accountId).first<Row>();
     if (!current || current.id !== request.expectedSubject || current.mgmt_revision !== expectedRevision) {
       const raced = await replay();
       if (raced) return raced;
@@ -198,6 +205,7 @@ export function accountManagementRoutes(verify: IdentityVerifier) {
     }
 
     let change: D1PreparedStatement;
+    const beforeChange: D1PreparedStatement[] = [];
     const guard = 'WHERE id=? AND mgmt_revision=? AND id=?';
     const guardArgs = [accountId, expectedRevision, request.expectedSubject];
     switch (request.action) {
@@ -216,14 +224,26 @@ export function accountManagementRoutes(verify: IdentityVerifier) {
         break;
       case 'deactivate':
         // Logical stop: the existing publisher gate (queue_paused) stops publication.
-        change = db.prepare(`UPDATE threads_accounts SET is_active=0, queue_paused=1, updated_at=? ${guard}`).bind(created, ...guardArgs);
+        change = db.prepare(`UPDATE threads_accounts SET is_active=0, is_default=0, queue_paused=1, updated_at=? ${guard}`).bind(created, ...guardArgs);
+        break;
+      case 'set_default':
+        if (!current.is_active || !current.token_cipher || current.status !== 'connected' || expired(current)) {
+          throw new MgmtError('action_not_available', 409);
+        }
+        beforeChange.push(db.prepare(`UPDATE threads_accounts SET is_default=0, updated_at=?
+          WHERE is_default=1 AND id<>? AND EXISTS (SELECT 1 FROM threads_accounts ${guard})`)
+          .bind(created, accountId, ...guardArgs));
+        change = db.prepare(`UPDATE threads_accounts SET is_default=1, updated_at=? ${guard}`).bind(created, ...guardArgs);
         break;
       case 'activate':
+        if (!current.token_cipher || current.status !== 'connected' || expired(current)) {
+          throw new MgmtError('reconnect_required', 409);
+        }
         // Never restarts the publication queue; the legacy /resume stays an explicit, separate step.
         change = db.prepare(`UPDATE threads_accounts SET is_active=1, updated_at=? ${guard}`).bind(created, ...guardArgs);
         break;
       case 'disconnect':
-        change = db.prepare(`UPDATE threads_accounts SET status='disconnected', queue_paused=1, token_cipher=NULL, updated_at=? ${guard}`).bind(created, ...guardArgs);
+        change = db.prepare(`UPDATE threads_accounts SET status='disconnected', is_active=0, is_default=0, queue_paused=1, token_cipher=NULL, updated_at=? ${guard}`).bind(created, ...guardArgs);
         break;
       default:
         throw new MgmtError('unsupported_action', 400);
@@ -231,6 +251,7 @@ export function accountManagementRoutes(verify: IdentityVerifier) {
     return commit([
       db.prepare(`INSERT INTO account_mgmt_receipts (operation_id, request_fingerprint, action, account_id, result_revision, created_at) SELECT ?,?,?,?,NULL,? WHERE EXISTS (SELECT 1 FROM threads_accounts ${guard})`)
         .bind(request.operationId, print, request.action, accountId, created, ...guardArgs),
+      ...beforeChange,
       change,
       fillReceipt(accountId),
     ], () => classify(db, request));

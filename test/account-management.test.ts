@@ -232,12 +232,19 @@ describe('account-mgmt/v1 account actions', () => {
     expect(response.status).toBe(200);
     expect(account()).toMatchObject({ id: '123', status: 'disconnected', token_cipher: null, queue_paused: 1 });
     expect((sqlite.prepare("SELECT status FROM threads_posts WHERE id='queued'").get() as any).status).toBe('queued');
-    expect((await (await mgmt('/accounts')).json()).data.accounts[0]).toMatchObject({ needsReauth: true, status: 'disconnected', actions: ['update_settings', 'deactivate', 'reconnect'] });
+    expect((await (await mgmt('/accounts')).json()).data.accounts[0]).toMatchObject({ needsReauth: true, status: 'disconnected', isActive: false, actions: ['update_settings', 'reconnect'] });
   });
-  it('does not support set_default (Threads has no default-account concept)', async () => {
-    const response = await operation(op('set_default'));
-    expect(response.status).toBe(400);
-    expect((await response.json()).error).toBe('unsupported_action');
+  it('switches the dashboard default atomically, replays the receipt and rejects a stale switch', async () => {
+    sqlite.prepare("INSERT INTO threads_accounts (id, username, token_cipher, created_at, updated_at) VALUES ('456','other','synthetic','now','now')").run();
+    expect((await operation(op('set_default'))).status).toBe(200);
+    const stale = op('set_default');
+    const swap = op('set_default', {}, { accountId: '456', expectedSubject: '456', expectedRevision: revision('456') });
+    expect((await operation(swap)).status).toBe(200);
+    expect((await (await operation(swap)).json()).data.replayed).toBe(true);
+    expect((await operation(stale)).status).toBe(409);
+    expect((await (await mgmt('/accounts')).json()).data.accounts.filter((a: any) => a.isDefault).map((a: any) => a.id)).toEqual(['456']);
+    expect((await (await call('/accounts')).json()).data.find((a: any) => a.id === '456').is_default).toBe(1);
+    expect(publisherCalls).toEqual([]);
   });
 });
 

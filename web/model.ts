@@ -42,6 +42,8 @@ export type Account = {
   id: string;
   username: string;
   status: string;
+  is_active?: number;
+  is_default?: number;
   queue_paused: number;
   pending_count: number;
   token_expires_at: string | null;

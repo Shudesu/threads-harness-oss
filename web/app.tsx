@@ -225,6 +225,7 @@ export function App() {
       rows.find(
         (a) => a.id === (preferredId ?? (selection.current || savedSelected())),
       )?.id ??
+      rows.find((a) => a.is_default === 1 && a.is_active === 1 && a.status === "connected")?.id ??
       rows.find((a) => a.status === "connected")?.id ??
       rows[0]?.id ??
       "";

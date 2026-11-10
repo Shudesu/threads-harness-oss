@@ -1,6 +1,8 @@
 -- account-mgmt/v1: additive only. Every write path (legacy API, token check,
 -- failure recording, resume, delete+recreate) moves mgmt_revision via triggers.
 ALTER TABLE threads_accounts ADD COLUMN mgmt_revision INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE threads_accounts ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1));
+CREATE UNIQUE INDEX IF NOT EXISTS idx_threads_accounts_single_default ON threads_accounts(is_default) WHERE is_default = 1;
 ALTER TABLE threads_accounts ADD COLUMN display_name TEXT;
 ALTER TABLE threads_accounts ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1;
 CREATE TABLE IF NOT EXISTS account_mgmt_sequence (
