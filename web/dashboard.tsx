@@ -61,6 +61,15 @@ export function nextAction(
       label: "予約の再開を確認",
       page: "accounts",
     };
+  if (account.held_count)
+    return {
+      tone: "warning",
+      title: `期限超過で保留中の予約が${account.held_count}件あります`,
+      description:
+        "再接続時に未来の予約だけを再開しました。期限を過ぎた予約は、内容と日時を確認してから再開してください。",
+      label: "保留した予約を確認",
+      page: "accounts",
+    };
   if (unsaved)
     return {
       tone: "neutral",

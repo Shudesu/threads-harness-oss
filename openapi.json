@@ -1550,6 +1550,184 @@
         ]
       }
     },
+    "/api/connection-health": {
+      "get": {
+        "operationId": "connectionHealth",
+        "summary": "接続ヘルスを threads.token.expiry / threads.scopes / threads.queue.paused として返す。保存値から計算し、最新スナップショットを記録する。",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "const": true
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "checkedAt": {
+                          "type": "string"
+                        },
+                        "accountId": {
+                          "type": "string"
+                        },
+                        "platform": {
+                          "const": "threads"
+                        },
+                        "overall": {
+                          "type": "string",
+                          "enum": [
+                            "ok",
+                            "warn",
+                            "fail"
+                          ]
+                        },
+                        "checks": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string",
+                                "enum": [
+                                  "threads.token.expiry",
+                                  "threads.scopes",
+                                  "threads.queue.paused"
+                                ]
+                              },
+                              "status": {
+                                "type": "string",
+                                "enum": [
+                                  "ok",
+                                  "warn",
+                                  "fail",
+                                  "unknown",
+                                  "manual"
+                                ]
+                              },
+                              "summary": {
+                                "type": "string"
+                              },
+                              "evidence": {
+                                "type": "object",
+                                "additionalProperties": true
+                              },
+                              "nextAction": {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "auto",
+                                      "approve",
+                                      "handoff",
+                                      "human_console",
+                                      "human_auth"
+                                    ]
+                                  },
+                                  "label": {
+                                    "type": "string"
+                                  },
+                                  "tool": {
+                                    "type": "string"
+                                  },
+                                  "args": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                  },
+                                  "docs": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "label"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "status",
+                              "summary",
+                              "evidence",
+                              "nextAction"
+                            ]
+                          }
+                        }
+                      },
+                      "required": [
+                        "checkedAt",
+                        "accountId",
+                        "platform",
+                        "overall",
+                        "checks"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "success",
+                    "data"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "不正な入力",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "APIキーが無効",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "対象がありません",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "処理結果を確認してください",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "parameters": [
+        {
+          "name": "account_id",
+          "in": "query",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
     "/api/accounts/{id}/limits": {
       "get": {
         "operationId": "publishingLimits",

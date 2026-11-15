@@ -12,7 +12,7 @@ const options={modules:true,script:outputFiles[0].text,compatibilityDate:'2026-0
  async outboundService(req){
   const u=new URL(req.url);assert.equal(u.origin,'https://graph.threads.net');assert.equal(req.headers.get('Authorization'),'Bearer fixture-token');
   if(u.pathname.endsWith('/me'))return Response.json({id:'456',username:'fixture'});
-  if(u.pathname.endsWith('/debug_token'))return Response.json({data:{type:'USER',user_id:'456',is_valid:true,scopes:['threads_basic','threads_content_publish','threads_manage_insights'],expires_at:Math.floor(Date.now()/1000)+3600}});
+  if(u.pathname.endsWith('/debug_token'))return Response.json({data:{type:'USER',user_id:'456',is_valid:true,scopes:['threads_basic','threads_content_publish','threads_manage_insights','threads_manage_replies'],expires_at:Math.floor(Date.now()/1000)+3600}});
   if(u.pathname.endsWith('/threads_publishing_limit'))return Response.json({data:[{quota_usage:0,config:{quota_total:250,quota_duration:86400}}]});
   if(req.method==='POST'){
    const body=Object.fromEntries(new URLSearchParams(await req.text()));

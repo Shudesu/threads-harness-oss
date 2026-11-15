@@ -44,6 +44,7 @@ export type Account = {
   status: string;
   queue_paused: number;
   pending_count: number;
+  held_count?: number;
   token_expires_at: string | null;
   data_access_expires_at: string | null;
   permissions_checked_at: string | null;

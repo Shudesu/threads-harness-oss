@@ -20,8 +20,95 @@ function errorResponse(error: unknown) {
   return Response.json(fail('処理に失敗しました。保存状態を確認してください。'), { status: 500 });
 }
 app.onError(error => errorResponse(error));
-type AccountHealth = { queue_paused?: number; status: string; token_expires_at: string | null; data_access_expires_at: string | null };
+type AccountHealth = { queue_paused?: number; status: string; token_expires_at: string | null; data_access_expires_at: string | null; permissions_checked_at?: string | null; last_error_code?: string | null; last_error_kind?: string | null; pending_count?: number; held_count?: number };
 const expired = (account: AccountHealth) => [account.token_expires_at, account.data_access_expires_at].some(date => date && Date.parse(date) <= Date.now());
+const EXPIRY_WARN_MS = 7 * 86400000;
+type HealthStatus = 'ok' | 'warn' | 'fail' | 'unknown' | 'manual';
+type NextAction = { kind: 'auto' | 'approve' | 'handoff' | 'human_console' | 'human_auth'; label: string; tool?: string; args?: Record<string, unknown>; docs?: string };
+type HealthCheck = { id: string; status: HealthStatus; summary: string; evidence: Record<string, unknown>; nextAction: NextAction };
+const reconnectAction = (label: string): NextAction => ({ kind: 'human_console', label, docs: 'アカウント設定 > 接続の更新' });
+const recheckAction = (accountId: string): NextAction => ({ kind: 'auto', label: '接続状態を確認する', tool: 'threads_check_connection', args: { accountId } });
+
+/** PLAN.md 1-1 connection-health contract, computed from saved state only. */
+function connectionChecks(account: AccountHealth & { id: string }): { checks: HealthCheck[]; overall: 'ok' | 'warn' | 'fail' } {
+  const severity = { ok: 0, unknown: 0, manual: 0, warn: 1, fail: 2 } as const;
+  const dates = [account.token_expires_at, account.data_access_expires_at].filter(Boolean) as string[];
+  const nextExpiry = dates.length ? Math.min(...dates.map(Date.parse)) : null;
+  const tokenExpiry: HealthCheck = nextExpiry === null ? {
+    id: 'threads.token.expiry', status: 'unknown', summary: 'トークンの有効期限が未確認です。',
+    evidence: { tokenExpiresAt: account.token_expires_at, dataAccessExpiresAt: account.data_access_expires_at },
+    nextAction: recheckAction(account.id),
+  } : nextExpiry <= Date.now() ? {
+    id: 'threads.token.expiry', status: 'fail', summary: 'トークンの有効期限が切れています。新しいトークンで再接続してください。',
+    evidence: { tokenExpiresAt: account.token_expires_at, dataAccessExpiresAt: account.data_access_expires_at },
+    nextAction: reconnectAction('新しいトークンで再接続する'),
+  } : nextExpiry <= Date.now() + EXPIRY_WARN_MS ? {
+    id: 'threads.token.expiry', status: 'warn', summary: 'トークンの有効期限が7日以内に切れます。期限前に新しいトークンへ更新してください。',
+    evidence: { tokenExpiresAt: account.token_expires_at, dataAccessExpiresAt: account.data_access_expires_at, expiresAt: new Date(nextExpiry).toISOString() },
+    nextAction: reconnectAction('期限前にトークンを更新する'),
+  } : {
+    id: 'threads.token.expiry', status: 'ok', summary: 'トークンの有効期限を確認済みです。',
+    evidence: { tokenExpiresAt: account.token_expires_at, dataAccessExpiresAt: account.data_access_expires_at },
+    nextAction: reconnectAction('接続情報を確認する'),
+  };
+  const scopes: HealthCheck = account.last_error_code === 'missing_permissions' || account.last_error_kind === 'permission_denied' ? {
+    id: 'threads.scopes', status: 'fail', summary: '必要な権限（threads_manage_replies を含む）が足りません。権限を追加してトークンを再発行してください。',
+    evidence: { permissionsCheckedAt: account.permissions_checked_at ?? null, lastErrorCode: account.last_error_code ?? null },
+    nextAction: reconnectAction('必要な権限でトークンを再発行する'),
+  } : !account.permissions_checked_at ? {
+    id: 'threads.scopes', status: 'unknown', summary: 'トークンの権限が未確認です。',
+    evidence: { permissionsCheckedAt: null },
+    nextAction: recheckAction(account.id),
+  } : {
+    id: 'threads.scopes', status: 'ok', summary: '必要な権限を確認済みです。',
+    evidence: { permissionsCheckedAt: account.permissions_checked_at, lastErrorCode: account.last_error_code ?? null },
+    nextAction: recheckAction(account.id!),
+  };
+  const held = account.held_count ?? 0;
+  const queuePaused: HealthCheck = account.queue_paused ? {
+    id: 'threads.queue.paused', status: 'warn', summary: '予約の公開を一時停止しています。内容を確認してから再開してください。',
+    evidence: { queuePaused: true, heldCount: held, pendingCount: account.pending_count ?? null },
+    nextAction: { kind: 'approve', label: '予約の再開を承認する', tool: 'threads_resume_queue', args: { accountId: account.id } },
+  } : held ? {
+    id: 'threads.queue.paused', status: 'warn', summary: `期限超過のため保留中の予約が${held}件あります。内容を確認して再開してください。`,
+    evidence: { queuePaused: false, heldCount: held, pendingCount: account.pending_count ?? null },
+    nextAction: { kind: 'approve', label: '保留した予約の再開を承認する', tool: 'threads_resume_queue', args: { accountId: account.id } },
+  } : {
+    id: 'threads.queue.paused', status: 'ok', summary: '予約は通常どおり処理されています。',
+    evidence: { queuePaused: false, heldCount: 0, pendingCount: account.pending_count ?? null },
+    nextAction: { kind: 'auto', label: '予約状況を確認する' },
+  };
+  const checks = [tokenExpiry, scopes, queuePaused];
+  const worst = Math.max(...checks.map(check => severity[check.status]));
+  return { checks, overall: worst >= 2 ? 'fail' : worst === 1 ? 'warn' : 'ok' };
+}
+
+async function connectionHealth(env: Bindings, accountId: string) {
+  const account = await env.DB.prepare(`SELECT a.id, a.username, a.status, a.queue_paused, a.token_expires_at, a.data_access_expires_at, a.permissions_checked_at, a.last_error_code, a.last_error_kind,
+    (SELECT COUNT(*) FROM threads_posts p WHERE p.account_id=a.id AND p.status IN ('queued','creating','processing','publishing')) AS pending_count,
+    (SELECT COUNT(*) FROM threads_posts p WHERE p.account_id=a.id AND p.status='queued' AND p.paused_hold=1) AS held_count
+    FROM threads_accounts a WHERE a.id=?`).bind(accountId).first<AccountHealth & { id: string }>();
+  if (!account) return null;
+  const { checks, overall } = connectionChecks(account);
+  const checkedAt = now();
+  try {
+    await env.DB.prepare('INSERT INTO threads_health_checks (account_id, checked_at, overall, checks_json) VALUES (?, ?, ?, ?) ON CONFLICT(account_id) DO UPDATE SET checked_at=excluded.checked_at, overall=excluded.overall, checks_json=excluded.checks_json')
+      .bind(accountId, checkedAt, overall, JSON.stringify(checks)).run();
+  } catch { /* Snapshot storage is optional; the report itself stays available. */ }
+  return { checkedAt, accountId, platform: 'threads', overall, checks };
+}
+
+/** Daily token expiry check: reverify saved tokens through Meta and refresh the stored health snapshot. */
+export async function runDailyConnectionCheck(env: Bindings) {
+  const accounts = (await env.DB.prepare("SELECT id FROM threads_accounts WHERE status!='disconnected'").all<{ id: string }>()).results;
+  for (const { id } of accounts) {
+    try { await recheckAccount(env, id); }
+    catch { // Failures are recorded on the account; keep checking the rest.
+    }
+    try { await connectionHealth(env, id); }
+    catch { /* Keep the remaining accounts observable. */ }
+  }
+}
 async function verifyConnection(token: string, env: Bindings) {
   try {
     const client = new ThreadsApi(token);
@@ -41,6 +128,39 @@ async function recordAccountFailure(env: Bindings, id: string, cipher: string, e
   const invalid = error.kind === 'token_invalid' || error.code === 'missing_permissions';
   await env.DB.prepare("UPDATE threads_accounts SET last_error_code=?, last_error_kind=?, queue_paused=CASE WHEN ? THEN 1 ELSE queue_paused END, status=CASE WHEN ? THEN 'reauth_required' ELSE status END, updated_at=? WHERE id=? AND token_cipher=?")
     .bind(error.code, error.kind, Number(invalid), Number(invalid), now(), id, cipher).run();
+}
+
+async function recheckAccount(env: Bindings, id: string) {
+  const account = await env.DB.prepare("SELECT token_cipher FROM threads_accounts WHERE id=? AND status!='disconnected'").bind(id).first<{ token_cipher: string }>();
+  if (!account?.token_cipher) throw new ThreadsError('no_saved_connection', '保存済みの接続がありません。トークンを入力してください。', 409);
+  try {
+    const profile = await verifyConnection(await unseal(account.token_cipher, env.TOKEN_ENCRYPTION_KEY), env);
+    if (profile.id !== id) throw new ThreadsError('token_user_mismatch', 'トークンのユーザー情報が一致しません。', 422);
+    const saved = await env.DB.prepare("UPDATE threads_accounts SET status='connected', token_expires_at=?, data_access_expires_at=?, permissions_checked_at=?, last_error_code=NULL, last_error_kind=NULL, updated_at=? WHERE id=? AND token_cipher=?")
+      .bind(profile.tokenExpiresAt, profile.dataAccessExpiresAt, now(), now(), id, account.token_cipher).run();
+    if (!saved.meta.changes) throw new ThreadsError('connection_changed', '接続が変更されました。一覧を更新してください。', 409);
+  } catch (error) {
+    await recordAccountFailure(env, id, account.token_cipher, error);
+    throw error;
+  }
+}
+
+/** Safe resume after a reconnect: future reservations resume, while overdue
+ * reservations (scheduled_at in the past) stay held per post and publish only
+ * after an explicitly confirmed resume. */
+async function safeResumeQueue(env: Bindings, id: string) {
+  await env.DB.prepare("UPDATE threads_posts SET paused_hold=1, updated_at=? WHERE account_id=? AND status='queued' AND paused_hold=0 AND (scheduled_at IS NULL OR scheduled_at<=?)").bind(now(), id, now()).run();
+  await env.DB.prepare("UPDATE threads_accounts SET queue_paused=0, updated_at=? WHERE id=? AND status='connected'").bind(now(), id).run();
+  const publisher = env.PUBLISHER.get(env.PUBLISHER.idFromName(`account:${id}`));
+  const armed = await publisher.fetch('https://publisher/arm', { method: 'POST' });
+  if (!armed.ok) throw new ThreadsError('resume_arm_failed', '予約スケジューラの再開を確認できませんでした。再接続をやり直してください。', 503);
+  // Pre-0005 reservations stay on the legacy scheduler. Wake it after the DB
+  // has been unpaused so its idle shutdown cannot lose this wake-up.
+  if (await env.DB.prepare("SELECT id FROM threads_posts WHERE account_id=? AND scheduler_key='tenant' AND status IN ('queued','processing') LIMIT 1").bind(id).first()) {
+    const legacy = env.PUBLISHER.get(env.PUBLISHER.idFromName('tenant'));
+    const legacyArmed = await legacy.fetch('https://publisher/arm', { method: 'POST' });
+    if (!legacyArmed.ok) throw new ThreadsError('resume_arm_failed', '旧予約スケジューラの再開を確認できませんでした。再開を再試行してください。', 503);
+  }
 }
 app.get('/health', c => c.json({ status: 'ok', product: 'threads', version: '0.2.1' }));
 app.get('/openapi.json', c => { c.header('Cache-Control', 'public, max-age=3600'); return c.json(openapi); });
@@ -63,15 +183,16 @@ app.get('/api/health', async c => {
   try {
     const columns = (await c.env.DB.prepare('PRAGMA table_info(threads_accounts)').all<{ name: string }>()).results;
     const posts = (await c.env.DB.prepare('PRAGMA table_info(threads_posts)').all<{ name: string }>()).results;
-    migrations = ['token_expires_at', 'data_access_expires_at', 'permissions_checked_at', 'last_error_code', 'queue_paused', 'last_error_kind'].every(name => columns.some(column => column.name === name)) && ['scheduler_key', 'error_kind', 'next_attempt_at', 'status_check_count', 'shares', 'media_json', 'media_children_json'].every(name => posts.some(column => column.name === name));
+    migrations = ['token_expires_at', 'data_access_expires_at', 'permissions_checked_at', 'last_error_code', 'queue_paused', 'last_error_kind'].every(name => columns.some(column => column.name === name)) && ['scheduler_key', 'error_kind', 'next_attempt_at', 'status_check_count', 'shares', 'media_json', 'media_children_json', 'paused_hold'].every(name => posts.some(column => column.name === name));
     const sso = await c.env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='admin_sso_jti'").first();
-    migrations = migrations && Boolean(sso);
+    const healthChecks = await c.env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='threads_health_checks'").first();
+    migrations = migrations && Boolean(sso) && Boolean(healthChecks);
     accounts = (await c.env.DB.prepare('SELECT COUNT(*) AS count FROM threads_accounts').first<{ count: number }>())?.count ?? null;
   } catch { /* expose readiness only, never schema errors or credentials */ }
   return c.json(ok({ ready: encryptionKey && migrations, apiKey: Boolean(c.env.API_KEY), encryptionKey, sso: (c.env.ADMIN_SSO_SECRET?.length ?? 0) >= 32, migrations, accounts }));
 });
 app.get('/api/accounts', async c => {
-  const rows = (await c.env.DB.prepare("SELECT id, username, status, queue_paused, token_expires_at, data_access_expires_at, permissions_checked_at, last_error_code, last_error_kind, created_at, updated_at, (SELECT COUNT(*) FROM threads_posts p WHERE p.account_id=threads_accounts.id AND p.status IN ('queued','creating','processing','publishing')) AS pending_count FROM threads_accounts ORDER BY created_at DESC").all<AccountHealth>()).results;
+  const rows = (await c.env.DB.prepare("SELECT id, username, status, queue_paused, token_expires_at, data_access_expires_at, permissions_checked_at, last_error_code, last_error_kind, created_at, updated_at, (SELECT COUNT(*) FROM threads_posts p WHERE p.account_id=threads_accounts.id AND p.status IN ('queued','creating','processing','publishing')) AS pending_count, (SELECT COUNT(*) FROM threads_posts p WHERE p.account_id=threads_accounts.id AND p.status='queued' AND p.paused_hold=1) AS held_count FROM threads_accounts ORDER BY created_at DESC").all<AccountHealth>()).results;
   return c.json(ok(rows.map(row => ({ ...row, status: row.status === 'connected' && expired(row) ? 'expired' : row.status }))));
 });
 app.post('/api/accounts', async c => {
@@ -81,27 +202,19 @@ app.post('/api/accounts', async c => {
   if (typeof accessToken !== 'string' || !accessToken.trim() || accessToken.length > 4096) return c.json(fail('Threadsアクセストークンを入力してください'), 400);
   const token = accessToken.trim();
   const profile = await verifyConnection(token, c.env);
+  const priorPaused = await c.env.DB.prepare('SELECT queue_paused FROM threads_accounts WHERE id=?').bind(profile.id).first<{ queue_paused: number | null }>();
   const cipher = await seal(token, c.env.TOKEN_ENCRYPTION_KEY);
   await c.env.DB.prepare("INSERT INTO threads_accounts (id, username, token_cipher, token_expires_at, data_access_expires_at, permissions_checked_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET username=excluded.username, token_cipher=excluded.token_cipher, status='connected', token_expires_at=excluded.token_expires_at, data_access_expires_at=excluded.data_access_expires_at, permissions_checked_at=excluded.permissions_checked_at, last_error_code=NULL, last_error_kind=NULL, updated_at=excluded.updated_at")
     .bind(profile.id, profile.username, cipher, profile.tokenExpiresAt, profile.dataAccessExpiresAt, now(), now(), now()).run();
+  // Reconnecting releases the pause safely: future reservations resume now,
+  // overdue ones stay held instead of publishing immediately (B-11).
+  if (priorPaused?.queue_paused) await safeResumeQueue(c.env, profile.id);
   return c.json(ok({ id: profile.id, username: profile.username }), 201);
 });
 app.post('/api/accounts/:id/check', async c => {
   validateEncryptionKey(c.env.TOKEN_ENCRYPTION_KEY ?? '');
-  const id = c.req.param('id');
-  const account = await c.env.DB.prepare("SELECT token_cipher FROM threads_accounts WHERE id=? AND status!='disconnected'").bind(id).first<{ token_cipher: string }>();
-  if (!account?.token_cipher) return c.json(fail('保存済みの接続がありません。トークンを入力してください。'), 409);
-  try {
-    const profile = await verifyConnection(await unseal(account.token_cipher, c.env.TOKEN_ENCRYPTION_KEY), c.env);
-    if (profile.id !== id) throw new ThreadsError('token_user_mismatch', 'トークンのユーザー情報が一致しません。', 422);
-    const saved = await c.env.DB.prepare("UPDATE threads_accounts SET status='connected', token_expires_at=?, data_access_expires_at=?, permissions_checked_at=?, last_error_code=NULL, last_error_kind=NULL, updated_at=? WHERE id=? AND token_cipher=?")
-      .bind(profile.tokenExpiresAt, profile.dataAccessExpiresAt, now(), now(), id, account.token_cipher).run();
-    if (!saved.meta.changes) return c.json(fail('接続が変更されました。一覧を更新してください。'), 409);
-    return c.json(ok({ checked: true }));
-  } catch (error) {
-    await recordAccountFailure(c.env, id, account.token_cipher, error);
-    throw error;
-  }
+  await recheckAccount(c.env, c.req.param('id'));
+  return c.json(ok({ checked: true }));
 });
 app.get('/api/accounts/:id/limits', async c => {
   const account = await c.env.DB.prepare("SELECT token_cipher FROM threads_accounts WHERE id=? AND status='connected'").bind(c.req.param('id')).first<{ token_cipher: string }>();
@@ -122,6 +235,13 @@ app.post('/api/accounts/:id/resume', async c => {
     if (!armed.ok) return c.json(fail('旧予約の再起動を確認できません。再開を再試行してください。'), 503);
   }
   return response;
+});
+app.get('/api/connection-health', async c => {
+  const accountId = c.req.query('account_id') ?? c.req.query('accountId');
+  if (!accountId) return c.json(fail('account_id required'), 400);
+  const health = await connectionHealth(c.env, accountId);
+  if (!health) return c.json(fail('アカウントがありません'), 404);
+  return c.json(ok(health));
 });
 app.post('/api/accounts/:id/disconnect', async c => {
   await c.env.DB.prepare("UPDATE threads_accounts SET status = 'disconnected', queue_paused=1, token_cipher = NULL, updated_at = ? WHERE id = ?").bind(now(), c.req.param('id')).run();
@@ -274,7 +394,7 @@ app.post('/api/posts/:id/cancel', async c => {
   await expectPostAccount(c);
   const target = await chainTarget(c.env.DB, c.req.param('id'));
   if (!target) return c.json(fail('連投の先頭から操作してください'), 409);
-  const result = await c.env.DB.prepare(`UPDATE threads_posts SET status='draft', scheduled_at=NULL, next_attempt_at=NULL, error_code=NULL, error_kind=NULL, container_id=NULL, media_children_json='[]', status_check_count=0, updated_at=? WHERE ${target.where} AND NOT EXISTS (SELECT 1 FROM threads_posts WHERE ${target.where} AND status != 'queued')`).bind(now(), target.id, target.id).run();
+  const result = await c.env.DB.prepare(`UPDATE threads_posts SET status='draft', scheduled_at=NULL, next_attempt_at=NULL, error_code=NULL, error_kind=NULL, container_id=NULL, media_children_json='[]', status_check_count=0, paused_hold=0, updated_at=? WHERE ${target.where} AND NOT EXISTS (SELECT 1 FROM threads_posts WHERE ${target.where} AND status != 'queued')`).bind(now(), target.id, target.id).run();
   if (!result.meta.changes) return c.json(fail('処理開始後は取り消せません'), 409);
   return c.json(ok({ cancelled: true }));
 });
@@ -311,6 +431,8 @@ export class ThreadsPublisher {
         await this.state.storage.put('scheduler_key', scope);
         await arm();
         await this.env.DB.prepare("UPDATE threads_accounts SET queue_paused=0, updated_at=? WHERE id=? AND status='connected'").bind(now(), payload.accountId).run();
+        // An approved resume covers held overdue reservations too.
+        await this.env.DB.prepare("UPDATE threads_posts SET paused_hold=0, updated_at=? WHERE account_id=? AND paused_hold=1").bind(now(), payload.accountId).run();
         return Response.json(ok({ resumed: true }));
       }
       if (payload) {
@@ -336,7 +458,7 @@ export class ThreadsPublisher {
         const insufficient = limits.posts.remaining < drafts.length - replies + (reserved?.posts ?? 0) || (replies > 0 && (limits.replies?.remaining ?? 0) < replies + (reserved?.replies ?? 0));
         if (!future && insufficient) return Response.json({ ...fail('現在の公開枠が不足しています。予約済みの原稿と投稿・返信の残枠を確認してください。'), code: 'quota_exhausted', kind: 'rate_limited', limits }, { status: 409 });
         await arm();
-        const result = await this.env.DB.prepare(`UPDATE threads_posts SET status='queued', scheduled_at=?, next_attempt_at=NULL, error_code=NULL, error_kind=NULL, status_check_count=0, updated_at=?, scheduler_key=? WHERE ${target.where} AND NOT EXISTS (SELECT 1 FROM threads_posts WHERE ${target.where} AND status != 'draft')`).bind(payload.scheduledAt, now(), scope, target.id, target.id).run();
+        const result = await this.env.DB.prepare(`UPDATE threads_posts SET status='queued', scheduled_at=?, next_attempt_at=NULL, error_code=NULL, error_kind=NULL, status_check_count=0, paused_hold=0, updated_at=?, scheduler_key=? WHERE ${target.where} AND NOT EXISTS (SELECT 1 FROM threads_posts WHERE ${target.where} AND status != 'draft')`).bind(payload.scheduledAt, now(), scope, target.id, target.id).run();
         if (!result.meta.changes) return Response.json(fail('すでに公開処理中、または下書きがありません'), { status: 409 });
         return Response.json(ok({ queued: true, scheduledAt: payload.scheduledAt, limits, warning: future ? '予約時刻の枠は保証されません。公開直前にも残枠を確認し、不足時は待機します。' : null }));
       }
@@ -355,11 +477,11 @@ export class ThreadsPublisher {
       .bind(now(), scope, cutoff).run();
     const blocked = await this.env.DB.prepare("SELECT id FROM threads_posts WHERE scheduler_key=? AND account_id IN (SELECT id FROM threads_accounts WHERE status='connected' AND queue_paused=0) AND status='queued' AND chain_id IN (SELECT chain_id FROM threads_posts WHERE status IN ('needs_review','failed') AND chain_id IS NOT NULL) LIMIT 1").bind(scope).first();
     if (blocked) await this.env.DB.prepare("UPDATE threads_posts SET status='needs_review', error_code='chain_parent_unconfirmed', updated_at=? WHERE scheduler_key=? AND account_id IN (SELECT id FROM threads_accounts WHERE status='connected' AND queue_paused=0) AND status='queued' AND chain_id IN (SELECT chain_id FROM threads_posts WHERE status IN ('needs_review','failed') AND chain_id IS NOT NULL)").bind(now(), scope).run();
-    const due = await this.env.DB.prepare("SELECT p.* FROM threads_posts p LEFT JOIN threads_posts parent ON parent.id=p.parent_id WHERE p.scheduler_key=? AND p.account_id IN (SELECT id FROM threads_accounts WHERE status='connected' AND queue_paused=0) AND (p.next_attempt_at IS NULL OR p.next_attempt_at<=?) AND ((p.status='queued' AND p.scheduled_at <= ?) OR p.status='processing') AND (p.parent_id IS NULL OR parent.published_id IS NOT NULL) ORDER BY p.scheduled_at, p.part_index LIMIT 5").bind(scope, now(), now()).all<Post>();
+    const due = await this.env.DB.prepare("SELECT p.* FROM threads_posts p LEFT JOIN threads_posts parent ON parent.id=p.parent_id WHERE p.scheduler_key=? AND p.account_id IN (SELECT id FROM threads_accounts WHERE status='connected' AND queue_paused=0) AND p.paused_hold=0 AND (p.next_attempt_at IS NULL OR p.next_attempt_at<=?) AND ((p.status='queued' AND p.scheduled_at <= ?) OR p.status='processing') AND (p.parent_id IS NULL OR parent.published_id IS NOT NULL) ORDER BY p.scheduled_at, p.part_index LIMIT 5").bind(scope, now(), now()).all<Post>();
     for (const post of due.results) await processPost(this.env, post);
     await this.state.blockConcurrencyWhile(async () => {
       // Include future reservations and interrupted mutations, not just due rows.
-      const pending = await this.env.DB.prepare("SELECT MIN(CASE WHEN status IN ('creating','publishing') THEN ? WHEN status='queued' THEN MAX(scheduled_at, COALESCE(next_attempt_at,'')) ELSE COALESCE(next_attempt_at,?) END) AS next_at, COUNT(*) AS count FROM threads_posts WHERE scheduler_key=? AND (status IN ('creating','publishing') OR (status IN ('queued','processing') AND account_id IN (SELECT id FROM threads_accounts WHERE status='connected' AND queue_paused=0)))")
+      const pending = await this.env.DB.prepare("SELECT MIN(CASE WHEN status IN ('creating','publishing') THEN ? WHEN status='queued' THEN MAX(scheduled_at, COALESCE(next_attempt_at,'')) ELSE COALESCE(next_attempt_at,?) END) AS next_at, COUNT(*) AS count FROM threads_posts WHERE scheduler_key=? AND paused_hold=0 AND (status IN ('creating','publishing') OR (status IN ('queued','processing') AND account_id IN (SELECT id FROM threads_accounts WHERE status='connected' AND queue_paused=0)))")
         .bind(new Date(Date.now() + 60000).toISOString(), new Date(Date.now() + 60000).toISOString(), scope).first<{ next_at: string | null; count: number }>();
       if (!pending?.count) await this.state.storage.deleteAlarm();
       else await this.state.storage.setAlarm(Math.max(Date.now() + 1000, Date.parse(pending.next_at ?? now())));
@@ -483,4 +605,10 @@ export async function processPost(env: Bindings, post: Post, clientFactory = (to
     await env.DB.prepare("UPDATE threads_posts SET status=?, error_code=?, error_kind=?, updated_at=? WHERE id=? AND status IN ('creating','publishing')").bind(definitelyNotPublished ? 'failed' : 'needs_review', code, kind, now(), post.id).run();
   }
 }
-export default app;
+/** Daily token expiry/scope check for every saved connection (wrangler cron trigger). */
+export default {
+  fetch: app.fetch,
+  async scheduled(_event: ScheduledController, env: Bindings) {
+    await runDailyConnectionCheck(env);
+  },
+};

@@ -1,5 +1,5 @@
 import type { MediaItem } from '../shared/media.mjs';
-export const REQUIRED_SCOPES = ['threads_basic', 'threads_content_publish', 'threads_manage_insights'] as const;
+export const REQUIRED_SCOPES = ['threads_basic', 'threads_content_publish', 'threads_manage_insights', 'threads_manage_replies'] as const;
 
 // Only numeric Meta diagnostics cross the API/storage boundary. Never retain
 // messages, URLs or bodies: they can contain credentials and user content.
