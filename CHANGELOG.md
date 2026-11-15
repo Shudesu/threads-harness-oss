@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — 2026-11-16
+
+- Resume queues safely on reconnect: saving a token for a paused account releases the pause and resumes future reservations only. Overdue reservations (scheduled time already past) stay held per post and publish only after an explicitly confirmed resume. Cancelling or re-queueing clears the hold.
+- Require `threads_manage_replies` at connection time so replies and chain posts stop failing at publication time. Missing permissions keep failing the connection check with the named scope.
+- Add the per-account connection health contract `GET /api/connection-health` (`threads.token.expiry`, `threads.scopes`, `threads.queue.paused`, each with summary/evidence/nextAction) and the MCP `threads_connection_health` read tool. The dashboard next action now surfaces held overdue reservations.
+- Add a daily token expiry check (wrangler cron trigger plus `scheduled` handler) that re-verifies saved tokens through Meta, warns 7 days before expiry and stores the latest health snapshot per account (`threads_health_checks`).
+- Migration 0008 adds `threads_posts.paused_hold` and the health snapshot table. Apply before deploying; no existing rows change behavior until their account reconnects.
+
 ## 0.2.1 — 2026-10-27
 
 - Simplify the dashboard around the selected account and one context-aware next action. Prioritize connection/expiry problems, uncertain publications, paused reservations and unsaved drafts.

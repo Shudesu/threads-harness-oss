@@ -28,13 +28,13 @@ const options = {
     assert.equal(request.headers.get('Authorization'), 'Bearer fixture-token');
     if (url.pathname.endsWith('/threads_publishing_limit') && rejectQuota) return Response.json({ error: { code: 190, message: 'fixture-token must not leak' } }, { status: 400 });
     if (url.pathname.endsWith('/threads_publishing_limit')) return Response.json({ data: [{ quota_usage: 0, config: { quota_total: 250, quota_duration: 86400 } }] });
-    return url.pathname.endsWith('/me') ? Response.json({ id: '456', username: 'fixture' }) : Response.json({ data: { type: 'USER', user_id: '456', is_valid: true, scopes: ['threads_basic','threads_content_publish','threads_manage_insights'], expires_at: Math.floor(Date.now()/1000)+3600 } });
+    return url.pathname.endsWith('/me') ? Response.json({ id: '456', username: 'fixture' }) : Response.json({ data: { type: 'USER', user_id: '456', is_valid: true, scopes: ['threads_basic','threads_content_publish','threads_manage_insights','threads_manage_replies'], expires_at: Math.floor(Date.now()/1000)+3600 } });
   },
 };
 const mf = new miniflare.Miniflare(miniflare.convertV4MiniflareOptions ? miniflare.convertV4MiniflareOptions(options) : options);
 try {
   const db = await mf.getD1Database('DB');
-  for (const file of ['0001_initial.sql', '0002_admin_sso.sql', '0003_chains_insights.sql', '0004_connection_health.sql', '0005_account_schedulers.sql', '0006_publication_safety.sql', '0007_media.sql']) {
+  for (const file of ['0001_initial.sql', '0002_admin_sso.sql', '0003_chains_insights.sql', '0004_connection_health.sql', '0005_account_schedulers.sql', '0006_publication_safety.sql', '0007_media.sql', '0008_safe_resume.sql']) {
     const sql = await readFile(new URL(`../migrations/${file}`, import.meta.url), 'utf8');
     for (const statement of sql.replace(/^\s*--[^\n]*/gm, '').split(';').filter(s => s.trim())) await db.prepare(statement).run();
   }

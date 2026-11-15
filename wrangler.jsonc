@@ -3,6 +3,10 @@
   "name": "threads-harness",
   "main": "src/index.ts",
   "compatibility_date": "2026-09-01",
+  "triggers": {
+    // Daily token expiry/scope check (src/index.ts scheduled handler).
+    "crons": ["17 3 * * *"]
+  },
   "assets": {
     "directory": "dist",
     "binding": "ASSETS",

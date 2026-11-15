@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { readFileSync } from 'node:fs';
-import { app, processPost, ThreadsPublisher } from '../src/index';
+import { app, processPost, ThreadsPublisher, runDailyConnectionCheck } from '../src/index';
 import { seal, unseal, ThreadsApi, ThreadsError } from '../src/threads';
 import { signAdminSsoToken } from '../src/admin-sso-token';
 
@@ -23,6 +23,7 @@ beforeEach(async () => {
   sqlite.exec(readFileSync(new URL('../migrations/0005_account_schedulers.sql', import.meta.url), 'utf8'));
   sqlite.exec(readFileSync(new URL('../migrations/0006_publication_safety.sql', import.meta.url), 'utf8'));
   sqlite.exec(readFileSync(new URL('../migrations/0007_media.sql', import.meta.url), 'utf8'));
+  sqlite.exec(readFileSync(new URL('../migrations/0008_safe_resume.sql', import.meta.url), 'utf8'));
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
     if (String(url).includes('/threads_publishing_limit')) return Response.json({ data: [{ quota_usage: 0, config: { quota_total: 250, quota_duration: 86400 }, reply_quota_usage: 0, reply_config: { quota_total: 1000, quota_duration: 86400 } }] });
     throw new Error('Unexpected external request in test');
@@ -181,7 +182,7 @@ describe('VPS chain workflow', () => {
 
 afterEach(() => { vi.unstubAllGlobals(); sqlite.close(); });
 
-const allScopes = ['threads_basic', 'threads_content_publish', 'threads_manage_insights'];
+const allScopes = ['threads_basic', 'threads_content_publish', 'threads_manage_insights', 'threads_manage_replies'];
 function mockConnection(overrides: Record<string, unknown> = {}) {
   const fetcher = vi.fn(async (url: string) => {
     if (url.includes('/threads_publishing_limit')) return Response.json({ data: [{ quota_usage: 0, config: { quota_total: 250, quota_duration: 86400 } }] });
@@ -394,10 +395,13 @@ describe('retained reservations after token failure', () => {
     expect(state.storage.deleteAlarm).toHaveBeenCalled();
     mockConnection();
     expect((await request('/accounts', 'POST', { accessToken: 'new-token' })).status).toBe(201);
-    expect(sqlite.prepare('SELECT queue_paused FROM threads_accounts').get()).toMatchObject({ queue_paused: 1 });
+    // Reconnecting releases the pause safely: overdue reservations stay held.
+    expect(sqlite.prepare('SELECT queue_paused FROM threads_accounts').get()).toMatchObject({ queue_paused: 0 });
+    expect(sqlite.prepare('SELECT COUNT(*) AS n FROM threads_posts WHERE paused_hold=1').get()).toMatchObject({ n: 7 });
     expect((await request('/accounts/123/resume', 'POST', {})).status).toBe(400);
     expect((await request('/accounts/123/resume', 'POST', { confirmed: true })).status).toBe(200);
     expect(sqlite.prepare('SELECT queue_paused FROM threads_accounts').get()).toMatchObject({ queue_paused: 0 });
+    expect(sqlite.prepare('SELECT COUNT(*) AS n FROM threads_posts WHERE paused_hold=1').get()).toMatchObject({ n: 0 });
     expect((await (await request('/accounts')).json() as any).data[0].pending_count).toBe(7);
     expect(creates).toBe(1);
   });
@@ -410,6 +414,124 @@ describe('retained reservations after token failure', () => {
     expect(publish).not.toHaveBeenCalled();
   });
 });
+describe('safe resume on reconnect', () => {
+  const upstream = () => vi.fn(async (url: string, init?: RequestInit) => {
+    const call = String(url);
+    if (call.includes('/me?')) return Response.json({ id: '123', username: 'owner' });
+    if (call.includes('/debug_token?')) return Response.json({ data: { type: 'USER', user_id: '123', is_valid: true, scopes: allScopes, expires_at: Math.floor(Date.now() / 1000) + 3600 } });
+    if (call.includes('/threads_publishing_limit')) return quotaResponse();
+    if (call.includes('/threads_publish')) return Response.json({ id: 'pub' });
+    if (init?.method === 'POST' && call.endsWith('/threads')) return Response.json({ id: '101' });
+    if (call.includes('?fields=status')) return Response.json({ status: 'FINISHED', error_message: null });
+    throw new Error('unexpected upstream request');
+  });
+  const pauseAccount = () => sqlite.prepare("UPDATE threads_accounts SET status='reauth_required', queue_paused=1, last_error_kind='token_invalid'").run();
+  const alarm = async () => {
+    const state = schedulerState();
+    await state.storage.put('scheduler_key', 'account:123');
+    await new ThreadsPublisher(state as any, env).alarm();
+  };
+  it('resumes only future reservations after reconnecting and never publishes overdue drafts immediately', async () => {
+    pauseAccount();
+    sqlite.prepare("UPDATE threads_posts SET status='queued', scheduled_at='2000-01-01T00:00:00Z', scheduler_key='account:123' WHERE id='draft'").run();
+    sqlite.prepare("INSERT INTO threads_posts (id,account_id,text,status,scheduled_at,scheduler_key,created_at,updated_at) VALUES ('future','123','later','queued',?, 'account:123', ?, ?)").run(new Date(Date.now() + 3600000).toISOString(), new Date().toISOString(), new Date().toISOString());
+    vi.stubGlobal('fetch', upstream());
+    expect((await request('/accounts', 'POST', { accessToken: 'new-token' })).status).toBe(201);
+    expect(sqlite.prepare('SELECT status,queue_paused FROM threads_accounts WHERE id=?').get('123')).toMatchObject({ status: 'connected', queue_paused: 0 });
+    expect(row('draft')).toMatchObject({ status: 'queued', paused_hold: 1, container_id: null });
+    expect(row('future')).toMatchObject({ status: 'queued', paused_hold: 0 });
+    // Time passes and the future reservation becomes due, next to the held one.
+    sqlite.prepare("UPDATE threads_posts SET scheduled_at='2000-01-01T00:00:00Z' WHERE id='future'").run();
+    await alarm();
+    expect(row('future')).toMatchObject({ status: 'processing', container_id: '101' });
+    expect(row('draft')).toMatchObject({ status: 'queued', paused_hold: 1, container_id: null });
+    sqlite.prepare("UPDATE threads_posts SET next_attempt_at=NULL WHERE id='future'").run();
+    await alarm();
+    expect(row('future').status).toBe('published');
+    expect(row('draft')).toMatchObject({ status: 'queued', paused_hold: 1 });
+    // Only the explicitly approved full resume releases overdue drafts.
+    expect((await request('/accounts/123/resume', 'POST', { confirmed: true })).status).toBe(200);
+    expect(row('draft').paused_hold).toBe(0);
+    await alarm();
+    expect(row('draft')).toMatchObject({ status: 'processing', container_id: '101' });
+    sqlite.prepare("UPDATE threads_posts SET next_attempt_at=NULL WHERE id='draft'").run();
+    await alarm();
+    expect(row('draft').status).toBe('published');
+  });
+  it('does not hold in-flight quota retries when reconnecting a healthy account', async () => {
+    sqlite.prepare("UPDATE threads_posts SET status='queued', scheduled_at='2000-01-01T00:00:00Z', next_attempt_at=?, scheduler_key='account:123' WHERE id='draft'").run(new Date(Date.now() + 300000).toISOString());
+    mockConnection();
+    expect((await request('/accounts', 'POST', { accessToken: 'new-token' })).status).toBe(201);
+    expect(row('draft')).toMatchObject({ status: 'queued', paused_hold: 0 });
+  });
+});
+
+describe('connection health contract', () => {
+  const read = async (query = 'account_id=123') => (await (await request(`/connection-health?${query}`)).json() as any).data;
+  it('reports expiry, scopes and queue state with next actions and no secrets', async () => {
+    expect((await request('/connection-health')).status).toBe(400);
+    expect((await request('/connection-health?account_id=missing')).status).toBe(404);
+    const fresh = await read();
+    expect(fresh).toMatchObject({ accountId: '123', platform: 'threads', overall: 'ok' });
+    expect(fresh.checkedAt).toBeTruthy();
+    expect(fresh.checks.map((c: any) => c.id)).toEqual(['threads.token.expiry', 'threads.scopes', 'threads.queue.paused']);
+    expect(fresh.checks.every((c: any) => typeof c.summary === 'string' && c.nextAction.kind)).toBe(true);
+    expect(JSON.stringify(fresh)).not.toContain('private-token');
+    sqlite.prepare('UPDATE threads_accounts SET token_expires_at=?, permissions_checked_at=?').run(new Date(Date.now() + 3 * 86400000).toISOString(), new Date().toISOString());
+    expect((await read()).checks[0]).toMatchObject({ status: 'warn' });
+    sqlite.prepare("UPDATE threads_accounts SET token_expires_at='2000-01-01T00:00:00Z'").run();
+    const expired = await read();
+    expect(expired.overall).toBe('fail');
+    expect(expired.checks[0]).toMatchObject({ status: 'fail', id: 'threads.token.expiry' });
+    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM threads_health_checks WHERE account_id='123'").get()).toMatchObject({ n: 1 });
+  });
+  it('flags permission loss and paused or held reservations with the right action kinds', async () => {
+    sqlite.prepare("UPDATE threads_accounts SET last_error_code='missing_permissions', last_error_kind='permission_denied', permissions_checked_at=?, queue_paused=1").run(new Date().toISOString());
+    const paused = await read();
+    expect(paused.overall).toBe('fail');
+    expect(paused.checks[1]).toMatchObject({ id: 'threads.scopes', status: 'fail' });
+    expect(paused.checks[2]).toMatchObject({ id: 'threads.queue.paused', status: 'warn', nextAction: { kind: 'approve', tool: 'threads_resume_queue' } });
+    // After a safe resume the pause is released while overdue reservations stay held.
+    sqlite.prepare("UPDATE threads_accounts SET queue_paused=0, last_error_code=NULL, last_error_kind=NULL").run();
+    sqlite.prepare("UPDATE threads_posts SET status='queued', scheduled_at='2000-01-01T00:00:00Z', paused_hold=1 WHERE id='draft'").run();
+    const held = await read();
+    expect(held.overall).toBe('warn');
+    expect(held.checks[2].status).toBe('warn');
+    expect(held.checks[2].summary).toContain('1件');
+    expect(held.checks[2].evidence.heldCount).toBe(1);
+  });
+});
+
+describe('daily token expiry check', () => {
+  it('rechecks saved connections through Meta, stores snapshots and pauses revoked tokens without publishing', async () => {
+    mockConnection();
+    await runDailyConnectionCheck(env);
+    let account = sqlite.prepare('SELECT * FROM threads_accounts WHERE id=?').get('123') as any;
+    expect(account.status).toBe('connected');
+    expect(account.token_expires_at).toBeTruthy();
+    expect(account.permissions_checked_at).toBeTruthy();
+    expect(sqlite.prepare('SELECT COUNT(*) AS n FROM threads_health_checks').get()).toMatchObject({ n: 1 });
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ error: { code: 190, error_subcode: 463, message: 'never expose this token' } }, { status: 400 })));
+    await runDailyConnectionCheck(env);
+    account = sqlite.prepare('SELECT status,queue_paused,last_error_code FROM threads_accounts WHERE id=?').get('123') as any;
+    expect(account).toMatchObject({ status: 'reauth_required', queue_paused: 1, last_error_code: 'threads_meta_190_463' });
+    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM threads_posts WHERE status NOT IN ('queued','draft') AND published_id IS NOT NULL").get()).toMatchObject({ n: 0 });
+  });
+  it('keeps checking the remaining accounts when one connection cannot be inspected', async () => {
+    sqlite.prepare("INSERT INTO threads_accounts (id,username,token_cipher,created_at,updated_at) VALUES ('456','second',?,?,?)").run(await seal('second-token', secret), new Date().toISOString(), new Date().toISOString());
+    const fetcher = vi.fn(async (url: string) => {
+      const call = String(url);
+      if (call.includes('debug_token?input_token=private-token')) throw new Error('network outage');
+      if (call.includes('/threads_publishing_limit')) return Response.json({ data: [{ quota_usage: 0, config: { quota_total: 250, quota_duration: 86400 } }] });
+      if (call.includes('/me?')) return Response.json({ id: '123', username: 'owner' });
+      return Response.json({ data: { type: 'USER', user_id: '123', is_valid: true, scopes: allScopes, expires_at: Math.floor(Date.now() / 1000) + 3600 } });
+    });
+    vi.stubGlobal('fetch', fetcher);
+    await runDailyConnectionCheck(env);
+    expect(sqlite.prepare('SELECT COUNT(*) AS n FROM threads_health_checks').get()).toMatchObject({ n: 2 });
+  });
+});
+
 describe('publishing quotas', () => {
   it('rejects immediate queueing when exhausted without changing the draft', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => quotaResponse(250)));

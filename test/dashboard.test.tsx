@@ -123,6 +123,17 @@ it("detects a known expired date even before the next account-list refresh", () 
     ).tone,
   ).toBe("danger");
 });
+it("routes overdue reservations held by a safe resume to the accounts page", () => {
+  const result = nextAction(
+    { ...account, held_count: 2 },
+    summary({ queued: 2 }),
+    false,
+    now,
+  );
+  expect(result.page).toBe("accounts");
+  expect(result.tone).toBe("warning");
+  expect(result.title).toContain("保留中の予約が2件");
+});
 it("keeps an unsaved editor reachable without resetting it", () => {
   const { navigate, startNew } = view({ unsaved: true });
   fireEvent.click(screen.getByRole("button", { name: "編集を続ける" }));
